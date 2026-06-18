@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QueueIt Extension</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header>
+            <div class="logo-container">
+                <div class="logo-icon"></div>
+                <span class="logo-text">QueueIt</span>
+            </div>
+            <div id="status-badge" class="badge">Detecting...</div>
+        </header>
+
+        <!-- Main Content -->
+        <main>
+            <div class="form-group">
+                <label for="title">Title</label>
+                <input type="text" id="title" placeholder="Loading title...">
+            </div>
+            
+            <div class="form-group">
+                <label for="url">URL</label>
+                <input type="text" id="url" readonly>
+            </div>
+
+            <div class="metadata">
+                <span id="source-name">...</span>
+                <span class="dot">•</span>
+                <span id="read-time">...</span>
+            </div>
+
+            <!-- Error container -->
+            <div id="error-container" class="error-box hidden">
+                <span class="error-icon">!</span>
+                <span id="error-message"></span>
+            </div>
+        </main>
+
+        <!-- Footer / Actions -->
+        <footer>
+            <button id="save-btn" class="btn-primary" disabled>
+                <span class="btn-icon">+</span>
+                <span id="btn-text">Extracting...</span>
+            </button>
+        </footer>
+        
+        <!-- Success Overlay -->
+        <div id="success-overlay" class="overlay hidden">
+            <div class="success-icon">✓</div>
+            <p>Saved to Queue!</p>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>
