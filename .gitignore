@@ -38,3 +38,12 @@ supabase/.temp/
 # Logs
 *.log
 npm-debug.log*
+
+backend/static/audio/
+backend/static/uploads/
+static/
+.env
+.venv/
+__pycache__/
+*.pyc
+node_modules/
