@@ -47,3 +47,14 @@ static/
 __pycache__/
 *.pyc
 node_modules/
+
+# Generated audio
+backend/static/audio/
+
+# Generated static files
+static/
+
+# Local test scripts
+backend/test_api_v2.py
+backend/test_yt_simple.py
+backend/find_user.py
