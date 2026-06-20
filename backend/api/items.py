@@ -71,29 +71,56 @@ def ensure_summary(item: dict) -> dict:
     """
     if item.get("ai_summary"):
         return item
-    # Need title and content
-    title = item.get("title") or ""
-    content = item.get("extracted_text") or item.get("description") or ""
-    description = item.get("description") or ""
-    
-    content_type = item.get("content_type") or "generic"
-    if content_type == "youtube":
-        title_for_ai = ""
-        content = item.get("transcript") or item.get("extracted_text") or item.get("description") or ""
-    else:
-        title_for_ai = title
 
-    ai = get_ai_service()
-    summary = ai.generate_summary(title=title_for_ai, content=content, description=description)
-    if not summary:
-        summary = ""
+    title = item.get("title") or ""
+    description = item.get("description") or ""
+    content_type = item.get("content_type") or "generic"
+    
+    # Priority: full_text (or transcript) -> extracted_text -> description -> title
+    resolved_content = ""
+    used_source = ""
+    
+    if content_type == "youtube":
+        resolved_content = item.get("transcript") or item.get("extracted_text") or ""
+        used_source = "transcript" if item.get("transcript") else "extracted_text"
+        if not resolved_content:
+            resolved_content = description
+            used_source = "description"
+        if not resolved_content:
+            resolved_content = title
+            used_source = "title"
+    else:
+        if item.get("extracted_text"):
+            resolved_content = item.get("extracted_text")
+            used_source = "extracted_text"
+        elif description:
+            resolved_content = description
+            used_source = "description"
+        else:
+            resolved_content = title
+            used_source = "title"
+
+    print(f"[PIPELINE LOG] [API] [ensure_summary] resolved content source: {used_source}, length: {len(resolved_content)}")
+    print(f"[PIPELINE LOG] [API] [ensure_summary] extracted_text length: {len(item.get('extracted_text') or '')}")
+
+    if len(resolved_content.strip()) < 300:
+        summary = "Limited text available"
+    else:
+        title_for_ai = "" if content_type == "youtube" else title
+        ai = get_ai_service()
+        summary = ai.generate_summary(title=title_for_ai, content=resolved_content, description=description, content_type=content_type)
+        if not summary:
+            summary = "AI summary could not be generated."
+
     # Update DB
     try:
         supabase.table("items").update({"ai_summary": summary}).eq("id", item.get("id")).execute()
         item["ai_summary"] = summary
+        print(f"[PIPELINE LOG] [Database] [ensure_summary] Saved to DB. ai_summary length: {len(summary)}")
     except Exception as e:
         logger.error(f"Failed to backfill ai_summary for item {item.get('id')}: {e}")
     return item
+
 
 def _generate_audio(item_id: str, summary: str) -> None:
     """Background task to generate audio summary and store URL."""
@@ -151,39 +178,69 @@ async def create_item(req: ItemCreate, background_tasks: BackgroundTasks, user_i
         print(f"[items] Extracting content: {clean_url}")
         extracted = await extract_content(clean_url)
         print(f"[items] Extracted content title={extracted.get('title', '?')!r} type={extracted.get('source_type', '?')}")
-        # Use full_text first; fall back to description so we always have something for AI
-        full_text = extracted.get("full_text") or ""
-        description = extracted.get("description") or ""
-        content = full_text or description
+        # 1. Extractor Stage Logs
+        full_text_val = extracted.get("full_text") or ""
+        description_val = extracted.get("description") or ""
+        transcript_val = extracted.get("transcript") or ""
+        title_val = req.title or extracted.get("title") or clean_url
+        title = title_val
+        source_type = extracted.get("source_type", "generic")
+
+        print(f"[PIPELINE LOG] [Extractor] URL: {clean_url}")
+        print(f"[PIPELINE LOG] [Extractor] extracted_text length: {len(full_text_val)}")
+        print(f"[PIPELINE LOG] [Extractor] full_text length: {len(full_text_val)}")
+        print(f"[PIPELINE LOG] [Extractor] description length: {len(description_val)}")
+        print(f"[PIPELINE LOG] [Extractor] transcript length: {len(transcript_val)}")
+
+        # Resolve content using priority: full_text (or transcript) -> extracted_text -> description -> title
+        content_to_use = ""
+        used_source = ""
+
+        if source_type == "youtube":
+            content_to_use = transcript_val or full_text_val
+            used_source = "transcript" if transcript_val else "full_text"
+            if not content_to_use:
+                content_to_use = description_val
+                used_source = "description"
+            if not content_to_use:
+                content_to_use = title_val
+                used_source = "title"
+            title_for_ai = ""
+        else:
+            if full_text_val:
+                content_to_use = full_text_val
+                used_source = "full_text"
+            elif extracted.get("extracted_text"):
+                content_to_use = extracted.get("extracted_text")
+                used_source = "extracted_text"
+            elif description_val:
+                content_to_use = description_val
+                used_source = "description"
+            else:
+                content_to_use = title_val
+                used_source = "title"
+            title_for_ai = title_val
+
+        print(f"[PIPELINE LOG] [API] Resolved content source: {used_source}, content length: {len(content_to_use)}")
 
         # AI enrichment with error handling
         ai = get_ai_service()
-        title = req.title or extracted.get("title") or clean_url
-        source_type = extracted.get("source_type", "generic")
         
-        if source_type == "youtube":
-            content = extracted.get("transcript") or extracted.get("full_text") or extracted.get("description") or ""
-            title_for_ai = ""
+        # Check text length for "Limited text available" rule
+        if len(content_to_use.strip()) < 300:
+            print(f"[PIPELINE LOG] [API] Content length genuinely less than 300. Bypassing AI.")
+            tags = ["uncategorized"]
+            summary = "Limited text available"
+            priority_score = 30
         else:
-            title_for_ai = title
-
-        try:
-            analysis = ai.analyze_content(title_for_ai, content, source_type)
-        except Exception as e:
-            logger.error(f"AI analysis failed for item {clean_url}: {e}")
-            analysis = {"tags": ["uncategorized"], "summary": "", "priority": 50}
-        tags = analysis["tags"]
-        summary = analysis.get("summary") or ""
-        priority_score = analysis["priority"]
-
-        # Ensure summary is never empty — always generate one from best available text
-        if not summary:
-            print("[items] AI summary empty, generating fallback summary")
-            summary = ai.generate_summary(
-                title=title_for_ai,
-                content=content,
-                description=description
-            ) or ""
+            try:
+                analysis = ai.analyze_content(title_for_ai, content_to_use, source_type)
+            except Exception as e:
+                logger.error(f"AI analysis failed for item {clean_url}: {e}")
+                analysis = {"tags": ["uncategorized"], "summary": "AI summary could not be generated.", "priority": 50}
+            tags = analysis["tags"]
+            summary = analysis.get("summary") or "AI summary could not be generated."
+            priority_score = analysis["priority"]
 
         print(f"[items] Tags: {tags}, Priority: {priority_score}, Summary length: {len(summary)}")
 
@@ -212,7 +269,9 @@ async def create_item(req: ItemCreate, background_tasks: BackgroundTasks, user_i
             raise Exception("Failed to insert item into database")
 
         item_id = result.data[0].get('id')
+        db_summary = result.data[0].get('ai_summary') or ""
         print(f"[items] Saved item id={item_id}")
+        print(f"[PIPELINE LOG] [Database] Saved item ID: {item_id}, database ai_summary length: {len(db_summary)}")
         # Schedule async audio generation if summary available
         if summary:
             background_tasks.add_task(_generate_audio, item_id, summary)
@@ -469,7 +528,7 @@ async def backfill_summaries(user_id: str = Depends(get_user_id)):
     # Fetch items with null or empty ai_summary
     result = (
         supabase.table("items")
-        .select("id, title, description, extracted_text, ai_summary")
+        .select("id, title, description, extracted_text, ai_summary, content_type, transcript")
         .eq("user_id", user_id)
         .execute()
     )
@@ -480,12 +539,49 @@ async def backfill_summaries(user_id: str = Depends(get_user_id)):
         if row.get("ai_summary"):
             continue
         title = row.get("title") or ""
-        content = row.get("extracted_text") or row.get("description") or ""
         description = row.get("description") or ""
-        summary = ai.generate_summary(title=title, content=content, description=description) or ""
+        content_type = row.get("content_type") or "generic"
+        
+        # Priority: full_text (or transcript) -> extracted_text -> description -> title
+        resolved_content = ""
+        used_source = ""
+        
+        if content_type == "youtube":
+            resolved_content = row.get("transcript") or row.get("extracted_text") or ""
+            used_source = "transcript" if row.get("transcript") else "extracted_text"
+            if not resolved_content:
+                resolved_content = description
+                used_source = "description"
+            if not resolved_content:
+                resolved_content = title
+                used_source = "title"
+            title_for_ai = ""
+        else:
+            if row.get("extracted_text"):
+                resolved_content = row.get("extracted_text")
+                used_source = "extracted_text"
+            elif description:
+                resolved_content = description
+                used_source = "description"
+            else:
+                resolved_content = title
+                used_source = "title"
+            title_for_ai = title
+
+        print(f"[PIPELINE LOG] [API] [backfill_summaries] resolved content source: {used_source}, length: {len(resolved_content)}")
+        print(f"[PIPELINE LOG] [API] [backfill_summaries] extracted_text length: {len(row.get('extracted_text') or '')}")
+
+        if len(resolved_content.strip()) < 300:
+            summary = "Limited text available"
+        else:
+            summary = ai.generate_summary(title=title_for_ai, content=resolved_content, description=description, content_type=content_type)
+            if not summary:
+                summary = "AI summary could not be generated."
+
         try:
             supabase.table("items").update({"ai_summary": summary}).eq("id", row.get("id")).execute()
             updated += 1
+            print(f"[PIPELINE LOG] [Database] [backfill_summaries] Saved to DB. ai_summary length: {len(summary)}")
         except Exception as e:
             logger.error(f"Backfill failed for item {row.get('id')}: {e}")
     return {"updated": updated}

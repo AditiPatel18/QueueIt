@@ -13,19 +13,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _build_fallback_summary(title: str, content: str, description: str = "") -> Optional[str]:
+def _build_fallback_summary(title: str, content: str, description: str = "", content_type: str = "article") -> Optional[str]:
     """Build a deterministic fallback summary from available text.
 
     Fallback chain: content (extracted_text) -> description -> title.
     Returns a concise summary or None if nothing useful is available.
     """
-    # Try extracted content first
+    if content_type == "youtube":
+        return "AI summary could not be generated."
+
     # Try extracted content first
     text = (content or "").strip()
-    if not text:
-        text = (description or "").strip()
-    if not text:
-        text = (title or "").strip()
     if not text:
         text = (description or "").strip()
     if not text:
@@ -53,13 +51,43 @@ def _build_fallback_summary(title: str, content: str, description: str = "") -> 
     return summary if len(summary) >= 10 else None
 
 
+
+def _clean_greetings(text: str) -> str:
+    """Strip greetings, intro phrases, and preamble from the beginning of the text."""
+    if not text:
+        return ""
+    text = text.strip()
+    
+    # List of regex patterns matching common greetings/preambles at the start of a summary
+    # Match sentences or phrases up to punctuation/greetings
+    patterns = [
+        r"^(?:hello|hi|hey|welcome|welcome\s+back)(?:\s+everyone|\s+guys|\s+folks|\s+there|\s+to\s+the\s+channel)?(?:[,.!?\s]+|$)",
+        r"^in\s+this\s+(?:video|tutorial|content)(?:,\s+we|,\s+i|,\s+this)?(?:\s+will\s+talk\s+about|\s+will\s+show\s+you|\s+discusses|\s+covers|\s+explains)?(?:[,.!?\s]+|$)",
+        r"^today(?:\s+we\s+are\s+going\s+to|\s+i'm\s+going\s+to|\s+we'll)?\s+(?:discuss|learn|cover|talk\s+about|look\s+at)(?:[,.!?\s]+|$)",
+    ]
+    
+    changed = True
+    while changed:
+        changed = False
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", text, flags=re.IGNORECASE)
+            if cleaned != text:
+                text = cleaned.strip()
+                changed = True
+                break
+                
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+    return text
+
+
 class AIService:
     def __init__(self, api_key: Optional[str] = None):
         self.enabled = False
         if api_key:
             try:
                 genai.configure(api_key=api_key)
-                self.model = genai.GenerativeModel('gemini-2.0-flash')
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
                 self.enabled = True
                 logger.info("AI Service initialized successfully")
             except Exception as e:
@@ -76,7 +104,7 @@ class AIService:
         text = text.strip()
         return text
     
-    def generate_summary(self, title: str, content: str = "", description: str = "") -> Optional[str]:
+    def generate_summary(self, title: str, content: str = "", description: str = "", content_type: str = "article") -> Optional[str]:
         """Generate a structured summary for a single item. Used for backfill/on-demand generation.
 
         Always returns a summary string (never None) — uses AI if available,
@@ -93,20 +121,25 @@ class AIService:
         # If AI enabled, generate structured summary
         if self.enabled:
             # Generate raw summary via analyze_content
-            raw_res = self.analyze_content(title, content, "article")
+            raw_res = self.analyze_content(title, content, content_type)
             raw_summary = raw_res.get("summary") or ""
             # Ensure not too similar to title
             if is_too_similar(title, raw_summary):
-                logger.warning("AI summary too similar to title, retrying with fallback extraction")
+                fallback_reason = "AI summary is too similar to title"
+                logger.warning(f"Fallback reason: {fallback_reason}")
                 raw_summary = ""
             # Generate structured summary if needed
             if raw_summary:
-                structured = self.generate_structured_summary(raw_summary, "article")
+                if content_type == "youtube":
+                    return raw_summary
+                structured = self.generate_structured_summary(raw_summary, content_type)
                 if structured:
                     return structured
             # If raw summary missing or unsuitable, fall back
         # Fallback deterministic summary
-        fallback = _build_fallback_summary(title, content, description)
+        fallback_reason = "AI generation returned empty summary or is disabled, falling back to deterministic summary"
+        logger.warning(f"Fallback reason: {fallback_reason}")
+        fallback = _build_fallback_summary(title, content, description, content_type)
         return fallback
 
 
@@ -121,29 +154,165 @@ class AIService:
                 return res.get("tags")
         return ["uncategorized"]
 
+    def _retry_youtube_analysis(self, content: str, transcript_len: int) -> dict:
+        logger.info("Retrying YouTube summarization with a simpler prompt...")
+        print("[DEBUG LOG] Retrying YouTube summarization with a simpler prompt...")
+        
+        truncated_content = (content or "")[:25000]
+        simpler_prompt = f"""You are a content summarizer. Write a 150-250 word study note summary of this YouTube transcript.
+Ignore all greetings, introductions, sponsor messages, and filler conversation.
+Start directly with the main topic. Do not copy transcript sentences verbatim.
+Write completely in your own words.
+
+TRANSCRIPT:
+{truncated_content}
+
+Return ONLY a JSON object:
+{{
+  "tags": ["keyconcept1", "keyconcept2"],
+  "summary": "YOUR SUMMARY HERE",
+  "priority": 50
+}}
+"""
+        simpler_prompt_len = len(simpler_prompt)
+        logger.info(f"Prompt length: {simpler_prompt_len}")
+        print(f"[PIPELINE LOG] [AI Service] text sent to Gemini length: {simpler_prompt_len}")
+        try:
+            response = self.model.generate_content(simpler_prompt)
+            raw_text = response.text if response and hasattr(response, 'text') else ""
+            logger.info(f"Raw Gemini response (first 300 chars): {raw_text[:300]}")
+            print(f"[DEBUG LOG] Raw Gemini response (first 300 chars): {raw_text[:300]}")
+            text = self._clean_json_response(raw_text)
+            
+            gemini_output_len = len(raw_text)
+            print(f"[PIPELINE LOG] [AI Service] Gemini response length: {gemini_output_len}")
+            try:
+                result = json.loads(text)
+                tags = result.get("tags", [])
+                summary = result.get("summary")
+                priority = result.get("priority", 50)
+                
+                # Validation
+                cleaned_tags = []
+                if isinstance(tags, list):
+                    for tag in tags[:5]:
+                        if isinstance(tag, str):
+                            cleaned = tag.lower().strip().replace(' ', '-')
+                            cleaned = re.sub(r'[^a-z0-9-]', '', cleaned)
+                            if cleaned and len(cleaned) > 1:
+                                cleaned_tags.append(cleaned)
+                if not cleaned_tags:
+                    cleaned_tags = ["uncategorized"]
+
+                if isinstance(priority, (int, float)):
+                    priority = max(0, min(100, int(priority)))
+                else:
+                    priority = 50
+
+                if not summary or len(str(summary)) < 10:
+                    raise ValueError("Summary is empty or too short in retry")
+
+                logger.info("Whether JSON parsing succeeded: True")
+                print("[DEBUG LOG] Whether JSON parsing succeeded: True")
+                logger.info("Whether fallback was used: False")
+                print("[DEBUG LOG] Whether fallback was used: False")
+                print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(str(summary))}")
+                return {
+                    "tags": cleaned_tags,
+                    "summary": str(summary),
+                    "priority": priority
+                }
+            except (json.JSONDecodeError, ValueError) as json_err:
+                logger.error(f"Retry JSON parsing failed: {json_err}")
+                logger.info("Whether JSON parsing succeeded: False")
+                print("[DEBUG LOG] Whether JSON parsing succeeded: False")
+                logger.info("Whether fallback was used: True")
+                print("[DEBUG LOG] Whether fallback was used: True")
+                summary = "AI summary could not be generated."
+                print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+                return {
+                    "tags": ["uncategorized"],
+                    "summary": summary,
+                    "priority": 50
+                }
+        except Exception as e:
+            logger.error(f"Retry Gemini generation failed: {e}")
+            logger.info("Whether JSON parsing succeeded: False")
+            print("[DEBUG LOG] Whether JSON parsing succeeded: False")
+            logger.info("Whether fallback was used: True")
+            print("[DEBUG LOG] Whether fallback was used: True")
+            summary = "AI summary could not be generated."
+            print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+            return {
+                "tags": ["uncategorized"],
+                "summary": summary,
+                "priority": 50
+            }
+
     def analyze_content(self, title: str, content: str, content_type: str = "article") -> dict:
         """Analyze content using AI or fallback.
         Returns a dict with keys: tags, summary, priority.
         """
-        fallback_summary = _build_fallback_summary(title, content, "")
+        # 1. Extractor/Full Text Stage Logs
+        content_len = len(content) if content else 0
+        print(f"[PIPELINE LOG] [AI Service] extracted_text length: {content_len}")
+        print(f"[PIPELINE LOG] [AI Service] full_text length: {content_len}")
+
+        # Check text length for "Limited text available" rule
+        # "Limited text available" should ONLY appear when the available text is genuinely less than 300 characters.
+        # It must NEVER appear if transcript length >300 or article text >300.
+        available_text = (content or "").strip()
+        if len(available_text) < 300:
+            print(f"[PIPELINE LOG] [AI Service] Genuinely less than 300 characters ({len(available_text)}). Returning 'Limited text available'")
+            summary = "Limited text available"
+            print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+            return {
+                "tags": ["uncategorized"],
+                "summary": summary,
+                "priority": 30
+            }
+
+        fallback_summary = _build_fallback_summary(title, content, "", content_type)
         default_result = {"tags": ["uncategorized"], "summary": fallback_summary, "priority": 50}
 
         if not self.enabled:
+            fallback_reason = "AI service not enabled"
+            logger.warning(f"Fallback reason: {fallback_reason}")
+            if content_type == "youtube":
+                transcript_len = len(content) if content else 0
+                logger.info(f"Transcript length: {transcript_len}")
+                print(f"[DEBUG LOG] Transcript length: {transcript_len}")
+                logger.info("Prompt length: 0")
+                print("[DEBUG LOG] Prompt length: 0")
+                logger.info("Raw Gemini response (first 300 chars): ")
+                print("[DEBUG LOG] Raw Gemini response (first 300 chars): ")
+                logger.info("Whether JSON parsing succeeded: False")
+                print("[DEBUG LOG] Whether JSON parsing succeeded: False")
+                logger.info("Whether fallback was used: True")
+                print("[DEBUG LOG] Whether fallback was used: True")
+            summary = fallback_summary or "AI summary could not be generated."
+            print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
             return default_result
 
-        content_preview = (content or "")[:8000]
+        if content_type == "youtube":
+            content_preview = (content or "")[:25000]
+        else:
+            content_preview = (content or "")[:8000]
+        
         title_preview = (title or "Untitled")[:300]
 
         type_instructions = ""
         if content_type == "youtube":
             type_instructions = """
-Generate a structured 100-250 word summary from the provided TRANSCRIPT/CONTENT. Do NOT summarize channel metadata or comments. Ensure it includes:
-• Main topic
-• Key concepts
-• Important steps/workflow (if any)
-• Actionable takeaways
-• Technologies/tools mentioned (if any)
-NEVER use or return only the title.
+Generate a study note summary of the YouTube video transcript.
+Strictly adhere to the following rules:
+1. IGNORE all introductions, greetings (e.g., "Hey everyone", "Welcome back", "Hi guys"), sponsor messages, subscribe requests, channel promotions, and filler conversation.
+2. START directly with the main topic that the video teaches. Do not use conversational preamble or introductory phrases.
+3. EXPLAIN what the video teaches, mention the important concepts, and key techniques/examples.
+4. END with a short takeaway.
+5. WRITE completely in your own words. Do NOT copy transcript sentences verbatim. Do NOT return the first paragraph or direct sentences from the transcript.
+6. The summary MUST read like a structured study note, not like subtitles or conversational text.
+7. Ensure the total word count is strictly between 150 and 250 words.
 """
         elif content_type == "github":
             type_instructions = """
@@ -211,45 +380,109 @@ Rules:
 - Priority: Integer score 0-100 indicating importance/urgency.
 - Do NOT include any markdown code blocks, backticks, or extra text. Return valid JSON only.
 """
+        gemini_input_len = len(prompt)
+        if content_type == "youtube":
+            transcript_len = len(content) if content else 0
+            logger.info(f"Transcript length: {transcript_len}")
+            print(f"[DEBUG LOG] Transcript length: {transcript_len}")
+        logger.info(f"Prompt length: {gemini_input_len}")
+        print(f"[DEBUG LOG] Prompt length: {gemini_input_len}")
+        print(f"[PIPELINE LOG] [AI Service] text sent to Gemini length: {gemini_input_len}")
+
         try:
             response = self.model.generate_content(prompt)
-            text = self._clean_json_response(response.text)
-            result = json.loads(text)
+            raw_text = response.text if response and hasattr(response, 'text') else ""
+            logger.info(f"Raw Gemini response (first 300 chars): {raw_text[:300]}")
+            print(f"[DEBUG LOG] Raw Gemini response (first 300 chars): {raw_text[:300]}")
+            text = self._clean_json_response(raw_text)
+            
+            gemini_output_len = len(raw_text)
+            logger.info(f"Gemini output length: {gemini_output_len}")
+            print(f"[PIPELINE LOG] [AI Service] Gemini response length: {gemini_output_len}")
 
-            tags = result.get("tags", [])
-            summary = result.get("summary")
-            priority = result.get("priority", 50)
+            try:
+                result = json.loads(text)
 
-            # Validation
-            cleaned_tags = []
-            if isinstance(tags, list):
-                for tag in tags[:5]:
-                    if isinstance(tag, str):
-                        cleaned = tag.lower().strip().replace(' ', '-')
-                        cleaned = re.sub(r'[^a-z0-9-]', '', cleaned)
-                        if cleaned and len(cleaned) > 1:
-                            cleaned_tags.append(cleaned)
-            if not cleaned_tags:
-                cleaned_tags = ["uncategorized"]
+                tags = result.get("tags", [])
+                summary = result.get("summary")
+                priority = result.get("priority", 50)
 
-            if isinstance(priority, (int, float)):
-                priority = max(0, min(100, int(priority)))
-            else:
-                priority = 50
+                # Validation
+                cleaned_tags = []
+                if isinstance(tags, list):
+                    for tag in tags[:5]:
+                        if isinstance(tag, str):
+                            cleaned = tag.lower().strip().replace(' ', '-')
+                            cleaned = re.sub(r'[^a-z0-9-]', '', cleaned)
+                            if cleaned and len(cleaned) > 1:
+                                cleaned_tags.append(cleaned)
+                if not cleaned_tags:
+                    cleaned_tags = ["uncategorized"]
 
-            # Ensure summary is never None — use fallback chain
-            if not summary or len(str(summary)) < 10:
-                summary = fallback_summary
-            else:
-                summary = str(summary)
+                if isinstance(priority, (int, float)):
+                    priority = max(0, min(100, int(priority)))
+                else:
+                    priority = 50
 
-            return {
-                "tags": cleaned_tags,
-                "summary": summary,
-                "priority": priority
-            }
+                # Ensure summary is never None or empty
+                if not summary or len(str(summary)) < 10:
+                    raise ValueError("Summary is empty or too short")
+                else:
+                    summary = str(summary)
+
+                logger.info("Whether JSON parsing succeeded: True")
+                print("[DEBUG LOG] Whether JSON parsing succeeded: True")
+                logger.info("Whether fallback was used: False")
+                print("[DEBUG LOG] Whether fallback was used: False")
+                print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+                return {
+                    "tags": cleaned_tags,
+                    "summary": summary,
+                    "priority": priority
+                }
+
+            except (json.JSONDecodeError, ValueError) as json_err:
+                fallback_reason = f"Gemini JSON parsing failed: {json_err}"
+                logger.warning(f"Fallback reason: {fallback_reason}")
+                logger.info("Whether JSON parsing succeeded: False")
+                print("[DEBUG LOG] Whether JSON parsing succeeded: False")
+
+                if content_type == "youtube":
+                    return self._retry_youtube_analysis(content, len(content) if content else 0)
+
+                # Extract plain text summary for other content types
+                summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', text)
+                if summary_match:
+                    summary = summary_match.group(1)
+                else:
+                    summary = text.strip()
+
+                # Clean up greetings
+                summary = _clean_greetings(summary)
+
+                logger.info("Whether fallback was used: True")
+                print("[DEBUG LOG] Whether fallback was used: True")
+                print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+                return {
+                    "tags": ["uncategorized"],
+                    "summary": summary,
+                    "priority": 50
+                }
+
         except Exception as e:
-            logger.error(f"Content analysis failed: {e}")
+            fallback_reason = f"Content analysis failed: {e}"
+            logger.error(fallback_reason)
+            logger.warning(f"Fallback reason: {fallback_reason}")
+            logger.info("Whether JSON parsing succeeded: False")
+            print("[DEBUG LOG] Whether JSON parsing succeeded: False")
+            
+            if content_type == "youtube":
+                return self._retry_youtube_analysis(content, len(content) if content else 0)
+                
+            logger.info("Whether fallback was used: True")
+            print("[DEBUG LOG] Whether fallback was used: True")
+            summary = fallback_summary or "AI summary could not be generated."
+            print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
             return default_result
 
     def generate_structured_summary(self, raw_summary: str, source_type: str) -> Optional[str]:
