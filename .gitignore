@@ -58,3 +58,12 @@ static/
 backend/test_api_v2.py
 backend/test_yt_simple.py
 backend/find_user.py
+
+# Test & Debug
+backend/test_*.py
+backend/debug_*.py
+backend/test_*.mp3
+
+# Python cache
+backend/.youtube_cache/
+*.pyc
