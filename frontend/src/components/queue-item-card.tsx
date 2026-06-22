@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, memo } from "react";
+import { useState, useRef, memo, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +41,9 @@ interface QueueItemCardProps {
   item: QueueItem;
   onUpdate: () => void;
   onTagClick?: (tag: string) => void;
+  onDeleteOptimistic?: (id: string) => Promise<void>;
+  onStatusChangeOptimistic?: (id: string, newStatus: QueueItem["status"]) => Promise<void>;
+  onFavoriteToggleOptimistic?: (id: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +96,9 @@ function getSourceMeta(sourceType: string) {
     case "github":
       return { Icon: GitBranch, label: "GitHub", badgeClass: "bg-neutral-500/10 text-neutral-450 border-neutral-500/20" };
 
+    case "instagram":
+      return { Icon: MessageSquare, label: "Instagram", badgeClass: "bg-pink-500/10 text-pink-400 border-pink-500/20" };
+
     case "article":
       return { Icon: BookOpen, label: "Article", badgeClass: "bg-blue-500/10 text-blue-400 border-blue-500/20" };
 
@@ -111,6 +117,8 @@ function getFallbackGradient(contentType: string) {
       return "from-cyan-950/40 via-background to-background border-cyan-500/5";
     case "reddit":
       return "from-orange-950/40 via-background to-background border-orange-500/5";
+    case "instagram":
+      return "from-pink-950/40 via-background to-background border-pink-500/5";
     case "article":
       return "from-blue-950/40 via-background to-background border-blue-500/5";
     default:
@@ -129,6 +137,11 @@ const statusConfig = {
     Icon: Loader2,
     className: "bg-amber-500/10 text-amber-400 border-amber-500/20",
   },
+  processing: {
+    label: "Processing...",
+    Icon: Loader2,
+    className: "bg-purple-500/10 text-purple-400 border-purple-500/20",
+  },
   completed: {
     label: "Completed",
     Icon: CheckCircle2,
@@ -145,13 +158,27 @@ const statusConfig = {
 // Component
 // ---------------------------------------------------------------------------
 
-export const QueueItemCard = memo(function QueueItemCard({ item, onUpdate, onTagClick }: QueueItemCardProps) {
+export const QueueItemCard = memo(function QueueItemCard({
+  item,
+  onUpdate,
+  onTagClick,
+  onDeleteOptimistic,
+  onStatusChangeOptimistic,
+  onFavoriteToggleOptimistic,
+}: QueueItemCardProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [showExpanded, setShowExpanded] = useState(false);
   const [editTitle, setEditTitle] = useState(item.title || "");
   const [editTags, setEditTags] = useState((item.tags || []).join(", "));
   const [editSummary, setEditSummary] = useState(item.ai_summary || "");
+  const [logoFailed, setLogoFailed] = useState(false);
+  const [thumbFailed, setThumbFailed] = useState(false);
+
+  useEffect(() => {
+    setLogoFailed(false);
+    setThumbFailed(false);
+  }, [item.id]);
   // Audio summary playback hooks
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -171,36 +198,46 @@ export const QueueItemCard = memo(function QueueItemCard({ item, onUpdate, onTag
     }
   };
 
+
+
   const statusInfo = statusConfig[item.status as keyof typeof statusConfig] ?? statusConfig.unread;
   const { Icon: StatusIcon } = statusInfo;
   const { Icon: SourceIcon, label: sourceLabel, badgeClass } = getSourceMeta(item.content_type);
   const isYouTube = item.content_type === "youtube";
 
   const handleStatusChange = async (newStatus: QueueItem["status"]) => {
-    setActionLoading("status");
-    try {
-      const res = await updateItem(item.id, { status: newStatus });
-      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
-      toast.success(newStatus === "completed" ? "Marked as complete! ✓" : "Status updated");
-      onUpdate();
-    } catch (e: any) {
-      toast.error("Failed to update status", { description: e.message });
-    } finally {
-      setActionLoading(null);
+    if (onStatusChangeOptimistic) {
+      await onStatusChangeOptimistic(item.id, newStatus);
+    } else {
+      setActionLoading("status");
+      try {
+        const res = await updateItem(item.id, { status: newStatus });
+        if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+        toast.success(newStatus === "completed" ? "Marked as complete! ✓" : "Status updated");
+        onUpdate();
+      } catch (e: any) {
+        toast.error("Failed to update status", { description: e.message });
+      } finally {
+        setActionLoading(null);
+      }
     }
   };
 
   const handleFavoriteToggle = async () => {
-    setActionLoading("favorite");
-    try {
-      const res = await updateItem(item.id, { is_favorite: !item.is_favorite });
-      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
-      toast.success(item.is_favorite ? "Removed from favorites" : "Added to favorites ★");
-      onUpdate();
-    } catch (e: any) {
-      toast.error("Failed to update favorite", { description: e.message });
-    } finally {
-      setActionLoading(null);
+    if (onFavoriteToggleOptimistic) {
+      await onFavoriteToggleOptimistic(item.id);
+    } else {
+      setActionLoading("favorite");
+      try {
+        const res = await updateItem(item.id, { is_favorite: !item.is_favorite });
+        if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+        toast.success(item.is_favorite ? "Removed from favorites" : "Added to favorites ★");
+        onUpdate();
+      } catch (e: any) {
+        toast.error("Failed to update favorite", { description: e.message });
+      } finally {
+        setActionLoading(null);
+      }
     }
   };
 
@@ -229,16 +266,20 @@ export const QueueItemCard = memo(function QueueItemCard({ item, onUpdate, onTag
 
   const handleDelete = async () => {
     if (!window.confirm("Delete this item from your queue?")) return;
-    setActionLoading("delete");
-    try {
-      const res = await deleteItem(item.id);
-      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
-      toast.success("Item deleted");
-      onUpdate();
-    } catch (e: any) {
-      toast.error("Failed to delete item", { description: e.message });
-    } finally {
-      setActionLoading(null);
+    if (onDeleteOptimistic) {
+      await onDeleteOptimistic(item.id);
+    } else {
+      setActionLoading("delete");
+      try {
+        const res = await deleteItem(item.id);
+        if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+        toast.success("Item deleted");
+        onUpdate();
+      } catch (e: any) {
+        toast.error("Failed to delete item", { description: e.message });
+      } finally {
+        setActionLoading(null);
+      }
     }
   };
 
@@ -304,22 +345,42 @@ export const QueueItemCard = memo(function QueueItemCard({ item, onUpdate, onTag
         ) : (
           <div className="flex items-start gap-4 p-5">
             {/* Logo container */}
-            <div className="flex-shrink-0 w-14 h-14 min-w-14 overflow-hidden rounded-md border border-border/10 bg-secondary/10 flex items-center justify-center">
-              {item.thumbnail_url ? (
+            <div className="relative flex-shrink-0 w-14 h-14 min-w-14 overflow-hidden rounded-md border border-border/10 bg-secondary/10 flex items-center justify-center">
+              {item.thumbnail_url && !thumbFailed ? (
                 <img
                   src={item.thumbnail_url}
                   alt={item.title || ""}
                   className="w-full h-full object-cover"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = "none";
-                  }}
+                  onError={() => setThumbFailed(true)}
                 />
-              ) : null}
-              {/* Fallback gradient with source icon */}
-              <div className={`fallback-gradient flex items-center justify-center ${item.thumbnail_url ? "hidden" : ""} bg-gradient-to-br ${getFallbackGradient(item.content_type)} w-full h-full`}
-              >
-                <SourceIcon className="h-6 w-6 opacity-15 text-foreground/40" />
-              </div>
+              ) : item.logo_url && !logoFailed ? (
+                <div className={`flex items-center justify-center w-full h-full p-2.5 bg-gradient-to-br ${getFallbackGradient(item.content_type)}`}>
+                  <img
+                    src={item.logo_url}
+                    alt={item.source_name || ""}
+                    className="w-7 h-7 object-contain bg-transparent"
+                    onError={() => setLogoFailed(true)}
+                  />
+                </div>
+              ) : (
+                /* Fallback gradient with source icon */
+                <div className={`fallback-gradient flex items-center justify-center bg-gradient-to-br ${getFallbackGradient(item.content_type)} w-full h-full`}
+                >
+                  <SourceIcon className="h-6 w-6 opacity-15 text-foreground/40" />
+                </div>
+              )}
+
+              {/* Platform Logo Overlay Badge (shows when thumbnail is displayed) */}
+              {item.thumbnail_url && !thumbFailed && item.logo_url && !logoFailed && (
+                <div className="absolute bottom-0 right-0 w-5 h-5 bg-background/95 border-t border-l border-border/10 p-0.5 flex items-center justify-center rounded-tl-md shadow-sm">
+                  <img
+                    src={item.logo_url}
+                    alt={item.source_name || ""}
+                    className="w-3.5 h-3.5 object-contain"
+                    onError={() => setLogoFailed(true)}
+                  />
+                </div>
+              )}
             </div>
 
               {/* Content column */}
@@ -350,7 +411,12 @@ export const QueueItemCard = memo(function QueueItemCard({ item, onUpdate, onTag
 
                 {/* AI Summary */}
 
-    {item.ai_summary ? (
+    {item.processing_status === "processing" ? (
+      <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-purple-500/5 rounded-lg p-2 border border-purple-500/5 animate-pulse">
+        <Loader2 className="h-4 w-4 text-purple-400 animate-spin shrink-0" />
+        <p className="leading-relaxed font-medium text-purple-400">Generating AI summary...</p>
+      </div>
+    ) : item.ai_summary ? (
       <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-start bg-primary/5 rounded-lg p-2 border border-primary/5">
         <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5 animate-pulse-slow" />
         <p className="line-clamp-2 leading-relaxed">{item.ai_summary}</p>
@@ -381,10 +447,18 @@ export const QueueItemCard = memo(function QueueItemCard({ item, onUpdate, onTag
                         <span className="text-muted-foreground/60">{timeAgo(item.created_at)}</span>
                       )}
                   </div>
-                  <div className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${statusInfo.className}`}
-                  >
-                    <StatusIcon className={`h-3 w-3 ${item.status === "reading" ? "animate-spin" : ""}`} />
-                    {statusInfo.label}
+                  <div className="flex items-center gap-1.5">
+                    {item.processing_status === "processing" && (
+                      <div className="flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase bg-purple-500/10 text-purple-400 border-purple-500/20 animate-pulse">
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                        AI Processing
+                      </div>
+                    )}
+                    <div className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${statusInfo.className}`}
+                    >
+                      <StatusIcon className={`h-3 w-3 ${item.status === "reading" ? "animate-spin" : ""}`} />
+                      {statusInfo.label}
+                    </div>
                   </div>
                 </div>
 
@@ -487,49 +561,58 @@ export const QueueItemCard = memo(function QueueItemCard({ item, onUpdate, onTag
                 {/* Collapsible details section */}
                 {showExpanded && (
                   <div className="mt-4 pt-4 border-t border-border/10 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
-                    {/* Full AI Summary */}
-                    {item.ai_summary && (
-                      <div className="space-y-1">
-                        <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
-                          <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
-                        </h4>
-                        <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-line bg-secondary/10 rounded p-2.5 border border-border/5">
-                          {item.ai_summary}
-                        </p>
+                    {item.processing_status === "processing" ? (
+                      <div className="flex flex-col items-center justify-center py-6 gap-2 bg-secondary/5 rounded-lg border border-border/5">
+                        <Loader2 className="h-6 w-6 text-purple-400 animate-spin" />
+                        <span className="text-xs text-muted-foreground">Extracting & summarizing content...</span>
                       </div>
-                    )}
-                    {/* Extracted Text Preview */}
-                    {item.extracted_text && (
-                      <div className="space-y-1">
-                        <h4 className="text-[10px] font-bold text-muted-foreground/80 uppercase tracking-wider flex items-center gap-1">
-                          <BookOpen className="h-3.5 w-3.5" /> Extracted Text Preview
-                        </h4>
-                        <div className="relative max-h-36 overflow-y-auto rounded bg-secondary/20 border border-border/10 p-2.5 text-[11px] text-muted-foreground font-mono leading-relaxed whitespace-pre-line">
-                          {item.extracted_text.slice(0, 1000)}
-                          {item.extracted_text.length > 1000 ? "..." : ""}
+                    ) : (
+                      <>
+                        {/* Full AI Summary */}
+                        {item.ai_summary && (
+                          <div className="space-y-1">
+                            <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                              <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
+                            </h4>
+                            <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-line bg-secondary/10 rounded p-2.5 border border-border/5">
+                              {item.ai_summary}
+                            </p>
+                          </div>
+                        )}
+                        {/* Extracted Text Preview */}
+                        {item.extracted_text && (
+                          <div className="space-y-1">
+                            <h4 className="text-[10px] font-bold text-muted-foreground/80 uppercase tracking-wider flex items-center gap-1">
+                              <BookOpen className="h-3.5 w-3.5" /> Extracted Text Preview
+                            </h4>
+                            <div className="relative max-h-36 overflow-y-auto rounded bg-secondary/20 border border-border/10 p-2.5 text-[11px] text-muted-foreground font-mono leading-relaxed whitespace-pre-line">
+                              {item.extracted_text.slice(0, 1000)}
+                              {item.extracted_text.length > 1000 ? "..." : ""}
+                            </div>
+                          </div>
+                        )}
+                        {/* Source Metadata grid */}
+                        <div className="grid grid-cols-2 gap-3 text-[11px] bg-secondary/15 rounded p-2.5 border border-border/5">
+                          <div>
+                            <span className="block text-muted-foreground/50 font-medium mb-0.5">Author</span>
+                            <span className="text-foreground truncate block font-semibold">
+                              {item.author || "Unknown"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="block text-muted-foreground/50 font-medium mb-0.5">Source Link</span>
+                            <a
+                              href={item.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline font-semibold flex items-center gap-0.5 truncate"
+                            >
+                              Visit Link <ExternalLink className="h-3 w-3 shrink-0" />
+                            </a>
+                          </div>
                         </div>
-                      </div>
+                      </>
                     )}
-                    {/* Source Metadata grid */}
-                    <div className="grid grid-cols-2 gap-3 text-[11px] bg-secondary/15 rounded p-2.5 border border-border/5">
-                      <div>
-                        <span className="block text-muted-foreground/50 font-medium mb-0.5">Author</span>
-                        <span className="text-foreground truncate block font-semibold">
-                          {item.author || "Unknown"}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="block text-muted-foreground/50 font-medium mb-0.5">Source Link</span>
-                        <a
-                          href={item.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline font-semibold flex items-center gap-0.5 truncate"
-                        >
-                          Visit Link <ExternalLink className="h-3 w-3 shrink-0" />
-                        </a>
-                      </div>
-                    </div>
                   </div>
                 )}
               </div>

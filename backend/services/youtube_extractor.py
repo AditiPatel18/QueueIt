@@ -4,9 +4,40 @@ Extracts metadata without downloading the video.
 """
 
 import logging
+import json
+import re
+import threading
+from pathlib import Path
 from yt_dlp import YoutubeDL
 
 logger = logging.getLogger(__name__)
+
+CACHE_DIR = Path(__file__).resolve().parent.parent / ".youtube_cache"
+CACHE_LOCK = threading.Lock()
+
+def _get_cache_file(video_id: str) -> Path:
+    return CACHE_DIR / f"{video_id}.json"
+
+def _read_from_cache(video_id: str) -> dict:
+    with CACHE_LOCK:
+        try:
+            cache_file = _get_cache_file(video_id)
+            if cache_file.exists():
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read YouTube cache for {video_id}: {e}")
+        return None
+
+def _write_to_cache(video_id: str, data: dict) -> None:
+    with CACHE_LOCK:
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file = _get_cache_file(video_id)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write YouTube cache for {video_id}: {e}")
 
 
 def extract_youtube(url: str) -> dict:
@@ -15,6 +46,20 @@ def extract_youtube(url: str) -> dict:
 
     Returns a standardised content dict.
     """
+    video_id = None
+    for pattern in [r"v=([a-zA-Z0-9_-]{11})", r"youtu\.be/([a-zA-Z0-9_-]{11})", r"embed/([a-zA-Z0-9_-]{11})", r"shorts/([a-zA-Z0-9_-]{11})"]:
+        match = re.search(pattern, url)
+        if match:
+            video_id = match.group(1)
+            break
+
+    if video_id:
+        cached_data = _read_from_cache(video_id)
+        if cached_data:
+            logger.info(f"Cache hit for YouTube video {video_id}")
+            print(f"[PIPELINE LOG] [Cache] Hit for YouTube video {video_id}")
+            return cached_data
+
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -28,16 +73,8 @@ def extract_youtube(url: str) -> dict:
         "nocheckcertificate": True,
     }
 
-    import re
     from youtube_transcript_api import YouTubeTranscriptApi
     
-    video_id = None
-    for pattern in [r"v=([a-zA-Z0-9_-]{11})", r"youtu\.be/([a-zA-Z0-9_-]{11})", r"embed/([a-zA-Z0-9_-]{11})", r"shorts/([a-zA-Z0-9_-]{11})"]:
-        match = re.search(pattern, url)
-        if match:
-            video_id = match.group(1)
-            break
-
     transcript_val = None
     full_text_val = None
     info = {}
@@ -93,7 +130,21 @@ def extract_youtube(url: str) -> dict:
     # Step 2: Try youtube-transcript-api
     if video_id:
         try:
-            api = YouTubeTranscriptApi()
+            import requests
+            class TimeoutHTTPAdapter(requests.adapters.HTTPAdapter):
+                def __init__(self, timeout=5.0, *args, **kwargs):
+                    self.timeout = timeout
+                    super().__init__(*args, **kwargs)
+                def send(self, request, **kwargs):
+                    kwargs["timeout"] = self.timeout
+                    return super().send(request, **kwargs)
+            
+            session = requests.Session()
+            adapter = TimeoutHTTPAdapter(timeout=5.0)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            
+            api = YouTubeTranscriptApi(http_client=session)
             transcript_list = api.list(video_id)
             # Fetch the first available transcript regardless of language
             transcript = next(iter(transcript_list))
@@ -126,7 +177,7 @@ def extract_youtube(url: str) -> dict:
     duration = info.get("duration")
     estimated_read_time = duration  # Use duration as estimated watch time in seconds
 
-    return {
+    result = {
         "title": info.get("title") or "Untitled Video",
         "author": info.get("uploader"),
         "thumbnail": info.get("thumbnail"),
@@ -144,3 +195,7 @@ def extract_youtube(url: str) -> dict:
         "published_date": info.get("upload_date"),
     }
 
+    if video_id:
+        _write_to_cache(video_id, result)
+
+    return result

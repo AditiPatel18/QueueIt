@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS public.items (
     duration_seconds INTEGER,
     extracted_text TEXT,
     status TEXT DEFAULT 'queued',
+    processing_status TEXT DEFAULT 'completed' CHECK (processing_status IN ('processing', 'completed', 'failed')),
     tags TEXT[] DEFAULT '{}',
     ai_summary TEXT,
     priority_score FLOAT DEFAULT 50.0,

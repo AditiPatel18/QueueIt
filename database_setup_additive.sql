@@ -54,6 +54,12 @@ BEGIN
     EXCEPTION
         WHEN duplicate_column THEN null;
     END;
+
+    BEGIN
+        ALTER TABLE items ADD COLUMN processing_status TEXT DEFAULT 'completed';
+    EXCEPTION
+        WHEN duplicate_column THEN null;
+    END;
 END $$;
 
 -- Create indexes if they don't exist (using IF NOT EXISTS syntax for indexes)

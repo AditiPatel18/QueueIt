@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -124,6 +125,7 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
 
       setSavedTitle(item?.title || "Content saved!");
       setState("success");
+      toast.success("✓ Saved to Queue");
 
       // Close after brief success animation
       setTimeout(() => {

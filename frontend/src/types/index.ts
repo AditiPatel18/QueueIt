@@ -9,6 +9,9 @@ export interface QueueItem {
   description: string | null;
   content_type: string;          // youtube | twitter | reddit | github | article | generic
   source_name: string | null;
+  source_type?: string | null;
+  source_domain?: string | null;
+  logo_url?: string | null;
   thumbnail_url: string | null;
   estimated_read_time: number | null;  // minutes
   duration_seconds: number | null;
@@ -18,6 +21,7 @@ export interface QueueItem {
   ai_summary: string | null;
   priority_score: number;
   status: "unread" | "reading" | "completed" | "archived";
+  processing_status: "processing" | "completed" | "failed";
   is_favorite: boolean;
   created_at: string;
   audio_url?: string | null;

@@ -36,6 +36,8 @@ class ItemResponse(BaseModel):
     description: Optional[str] = None
     content_type: str = "generic"
     source_name: Optional[str] = None
+    source_type: Optional[str] = None
+    source_domain: Optional[str] = None
     thumbnail_url: Optional[str] = None
     estimated_read_time: Optional[int] = None
     duration_seconds: Optional[int] = None
@@ -45,5 +47,6 @@ class ItemResponse(BaseModel):
     ai_summary: Optional[str] = None
     priority_score: float = 50.0
     status: str = "unread"
+    processing_status: str = "completed"
     is_favorite: bool = False
     added_at: Optional[str] = None

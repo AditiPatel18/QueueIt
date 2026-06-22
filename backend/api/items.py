@@ -3,16 +3,33 @@ Items API router — complete implementation with AI integration.
 All endpoints, full filtering, sorting, search, and priority recalculation.
 """
 
+import asyncio
 from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Any, Optional, List
 from datetime import datetime, timezone, timedelta
 
 from schemas.item import ItemCreate, ItemUpdate, ItemEdit
-from services.extractor import extract_content
+from services.extractor import extract_content, detect_source_type, resolve_platform_info
 from services.ai_service import get_ai_service
 from services.audio_service import AudioService
-from utils.supabase_client import supabase
+import threading
+from supabase import create_client
+from config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+
+_thread_local = threading.local()
+
+class ThreadLocalSupabaseProxy:
+    @property
+    def _client(self):
+        if not hasattr(_thread_local, "supabase"):
+            _thread_local.supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        return _thread_local.supabase
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+supabase = ThreadLocalSupabaseProxy()
 from middleware.auth import get_current_user
 
 import logging
@@ -39,21 +56,45 @@ def item_to_response(item: dict) -> dict:
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
 
+    # Dynamic branding fallback for missing fields in the database row
+    url = item.get("url", "")
+    source_name = item.get("source_name")
+    source_type = item.get("source_type")
+    source_domain = item.get("source_domain")
+    logo_url = item.get("logo_url")
+    
+    if url and (not source_name or not source_type or not source_domain or not logo_url):
+        try:
+            info = resolve_platform_info(url)
+            if not source_name:
+                source_name = info["source_name"]
+            if not source_type:
+                source_type = info["source_type"]
+            if not source_domain:
+                source_domain = info["source_domain"]
+            if not logo_url:
+                logo_url = info["logo_url"]
+        except Exception as e:
+            logger.warning("Dynamic branding resolution failed for %s: %s", url, e)
+
     return {
         "id": item.get("id"),
         "user_id": item.get("user_id"),
-        "url": item.get("url", ""),
+        "url": url,
         "title": item.get("title"),
         "description": item.get("description"),
         "content_type": item.get("content_type", "generic"),
-        "logo_url": item.get("logo_url"),
         "status": item.get("status", "unread"),
+        "processing_status": item.get("processing_status", "completed"),
         "is_favorite": item.get("is_favorite", False),
         "added_at": item.get("added_at"),
         "created_at": item.get("created_at") or item.get("added_at"),
         "audio_url": item.get("audio_url"),
-        "source_name": item.get("source_name"),
         "thumbnail_url": item.get("thumbnail_url"),
+        "source_name": source_name,
+        "source_type": source_type or item.get("content_type"),
+        "source_domain": source_domain,
+        "logo_url": logo_url,
         # ── Fields that were previously missing ──
         "ai_summary": item.get("ai_summary"),
         "tags": tags,
@@ -65,60 +106,205 @@ def item_to_response(item: dict) -> dict:
     }
 
 
+def is_valid_content_for_summary(text: str) -> bool:
+    if not text:
+        return False
+    text = text.strip()
+    if not text:
+        return False
+    
+    # Check if it is a URL
+    if text.startswith("http://") or text.startswith("https://"):
+        return False
+        
+    # Check if it is just a generic fallback/placeholder
+    fallbacks = {
+        "content could not be extracted for summarization.",
+        "summary unavailable.",
+        "ai summary could not be generated.",
+        "generating ai summary...",
+        "limited text available",
+        "no metadata or transcript available for this video.",
+        "summary could not be generated."
+    }
+    if text.lower() in fallbacks:
+        return False
+
+    # Check if it is metadata / too short
+    if len(text) < 30:
+        return False
+        
+    return True
+
+
+def get_usable_content(item_data: dict) -> Optional[str]:
+    """
+    Resolve any available content for summarization.
+    Prioritizes transcript or extracted text.
+    Falls back to caption, description, title, or author details.
+    Returns None if absolutely no usable content exists.
+    """
+    transcript_val = item_data.get("transcript") or ""
+    extracted_text_val = item_data.get("extracted_text") or item_data.get("full_text") or ""
+    
+    if is_valid_content_for_summary(transcript_val):
+        return transcript_val.strip()
+    if is_valid_content_for_summary(extracted_text_val):
+        return extracted_text_val.strip()
+        
+    # If not strictly valid (e.g. under 30 chars), let's see if we have some non-placeholder text
+    for txt in [transcript_val, extracted_text_val]:
+        if txt:
+            cleaned = txt.strip()
+            if cleaned and not cleaned.startswith("http") and cleaned.lower() not in {
+                "content could not be extracted for summarization.",
+                "summary unavailable.",
+                "ai summary could not be generated.",
+                "generating ai summary...",
+                "limited text available",
+                "no metadata or transcript available for this video.",
+                "summary could not be generated."
+            }:
+                return cleaned
+                
+    # Fallback to metadata / caption
+    title = item_data.get("title") or ""
+    desc = item_data.get("description") or ""
+    author = item_data.get("author") or ""
+    url = item_data.get("url") or ""
+    
+    parts = []
+    if title and title != url:
+        parts.append(f"Title: {title}")
+    if author and author != "Unknown Author":
+        parts.append(f"Author: {author}")
+    if desc:
+        cleaned_desc = desc.strip()
+        # Ignore generic placeholder descriptions
+        if cleaned_desc.lower() not in {
+            "instagram post content", "instagram post", "threads post content", 
+            "threads post", "limited text available"
+        }:
+            parts.append(f"Caption/Description: {cleaned_desc}")
+            
+    if parts:
+        return "\n".join(parts)
+        
+    # Absolute fallback
+    if title:
+        return f"Link: {url}\nTitle: {title}"
+        
+    return None
+
+
 def ensure_summary(item: dict) -> dict:
     """Ensure the item has a non-empty ai_summary. If missing, generate one and update DB.
     Returns the possibly updated item dict.
     """
-    if item.get("ai_summary"):
+    ai_summary = item.get("ai_summary")
+    if ai_summary and ai_summary not in ["Summary could not be generated.", "Content could not be extracted for summarization.", "Summary unavailable.", "Limited text available"]:
         return item
 
     title = item.get("title") or ""
-    description = item.get("description") or ""
     content_type = item.get("content_type") or "generic"
-    
-    # Priority: full_text (or transcript) -> extracted_text -> description -> title
-    resolved_content = ""
-    used_source = ""
-    
-    if content_type == "youtube":
-        resolved_content = item.get("transcript") or item.get("extracted_text") or ""
-        used_source = "transcript" if item.get("transcript") else "extracted_text"
-        if not resolved_content:
-            resolved_content = description
-            used_source = "description"
-        if not resolved_content:
-            resolved_content = title
-            used_source = "title"
-    else:
-        if item.get("extracted_text"):
-            resolved_content = item.get("extracted_text")
-            used_source = "extracted_text"
-        elif description:
-            resolved_content = description
-            used_source = "description"
+    transcript_val = item.get("transcript") or ""
+    extracted_text_val = item.get("extracted_text") or ""
+    if not transcript_val and extracted_text_val and content_type == "youtube":
+        if "--- METADATA ---" in extracted_text_val:
+            transcript_val = extracted_text_val.split("--- METADATA ---")[0].strip()
         else:
-            resolved_content = title
-            used_source = "title"
+            transcript_val = extracted_text_val
 
-    print(f"[PIPELINE LOG] [API] [ensure_summary] resolved content source: {used_source}, length: {len(resolved_content)}")
-    print(f"[PIPELINE LOG] [API] [ensure_summary] extracted_text length: {len(item.get('extracted_text') or '')}")
+    resolved_content = get_usable_content({
+        "transcript": transcript_val,
+        "extracted_text": extracted_text_val,
+        "title": title,
+        "description": item.get("description"),
+        "author": item.get("author"),
+        "url": item.get("url")
+    })
 
-    if len(resolved_content.strip()) < 300:
-        summary = "Limited text available"
-    else:
-        title_for_ai = "" if content_type == "youtube" else title
-        ai = get_ai_service()
-        summary = ai.generate_summary(title=title_for_ai, content=resolved_content, description=description, content_type=content_type)
-        if not summary:
-            summary = "AI summary could not be generated."
-
-    # Update DB
+    title_for_ai = "" if content_type == "youtube" else title
+    summary = None
+    db_updated = False
+    
+    print(f"[PIPELINE LOG] [ensure_summary] Starting summary generation for item {item.get('id')}...")
+    
     try:
-        supabase.table("items").update({"ai_summary": summary}).eq("id", item.get("id")).execute()
+        if not resolved_content:
+            summary = "Summary could not be generated."
+            print(f"[PIPELINE LOG] [ensure_summary] No valid content for summary.")
+        else:
+            ai = get_ai_service()
+            # Attempt 1
+            print(f"[PIPELINE LOG] [ensure_summary] Attempt 1...")
+            try:
+                summary = ai.generate_summary(title=title_for_ai, content=resolved_content, content_type=content_type)
+                print(f"[PIPELINE LOG] [ensure_summary] Attempt 1 succeeded.")
+            except Exception as e:
+                logger.warning(f"[ensure_summary] attempt 1 failed: {e}")
+                print(f"[PIPELINE LOG] [ensure_summary] Attempt 1 failed: {e}")
+            
+            # Check fallback/failure
+            if not summary or summary in ["Content could not be extracted for summarization.", "Summary could not be generated.", "Summary unavailable."]:
+                # Retry once
+                print(f"[PIPELINE LOG] [ensure_summary] Attempt 2 (Retry)...")
+                try:
+                    summary = ai.generate_summary(title=title_for_ai, content=resolved_content, content_type=content_type)
+                    print(f"[PIPELINE LOG] [ensure_summary] Attempt 2 succeeded.")
+                except Exception as e:
+                    logger.error(f"[ensure_summary] retry failed: {e}")
+                    print(f"[PIPELINE LOG] [ensure_summary] Attempt 2 failed: {e}")
+                    raise e # never swallow exceptions
+            
+            if not summary or summary in ["Content could not be extracted for summarization.", "Summary could not be generated.", "Summary unavailable."]:
+                raise ValueError(f"AI Analysis failed to generate a valid summary. Got: {summary}")
+
+        transcript_len = len(transcript_val)
+        extracted_text_len = len(extracted_text_val)
+        summary_input_len = len(resolved_content)
+        summary_output_len = len(summary) if summary else 0
+
+        print(f"[PIPELINE LOG] ensure_summary - transcript_length: {transcript_len}")
+        print(f"[PIPELINE LOG] ensure_summary - extracted_text_length: {extracted_text_len}")
+        print(f"[PIPELINE LOG] ensure_summary - summary_input_length: {summary_input_len}")
+        print(f"[PIPELINE LOG] ensure_summary - summary_output_length: {summary_output_len}")
+
+        # Update DB
+        processing_status = "completed" if summary and summary != "Summary could not be generated." else "failed"
+        print(f"[PIPELINE LOG] [Database] [ensure_summary] Updating DB with status='{processing_status}'...")
+        update_data = {
+            "ai_summary": summary,
+            "processing_status": processing_status,
+            "extracted_text": extracted_text_val or resolved_content
+        }
+        supabase.table("items").update(update_data).eq("id", item.get("id")).execute()
+        db_updated = True
         item["ai_summary"] = summary
-        print(f"[PIPELINE LOG] [Database] [ensure_summary] Saved to DB. ai_summary length: {len(summary)}")
+        item["processing_status"] = processing_status
+        print(f"[PIPELINE LOG] [Database] [ensure_summary] DB update completed successfully.")
     except Exception as e:
-        logger.error(f"Failed to backfill ai_summary for item {item.get('id')}: {e}")
+        logger.error(f"ensure_summary failed for item {item.get('id')}: {e}", exc_info=True)
+        print(f"[PIPELINE LOG] [ensure_summary] Failed: {e}")
+        
+        if not db_updated:
+            try:
+                print(f"[PIPELINE LOG] [Database] [ensure_summary] Updating DB with failed status...")
+                update_data = {
+                    "ai_summary": "Summary could not be generated.",
+                    "processing_status": "failed",
+                    "extracted_text": extracted_text_val or resolved_content
+                }
+                supabase.table("items").update(update_data).eq("id", item.get("id")).execute()
+                item["ai_summary"] = "Summary could not be generated."
+                item["processing_status"] = "failed"
+                print(f"[PIPELINE LOG] [Database] [ensure_summary] DB updated to 'failed' successfully.")
+            except Exception as db_err:
+                logger.error(f"Failed to update item {item.get('id')} on failure: {db_err}")
+                print(f"[PIPELINE LOG] [Database] [ensure_summary] CRITICAL: Failed to update DB on failure: {db_err}")
+        
+        raise e
+        
     return item
 
 
@@ -153,6 +339,234 @@ def _get_user_interests(user_id: str) -> List[str]:
         return []
 
 
+async def run_background_extraction_and_enrichment(
+    item_id: str,
+    clean_url: str,
+    user_id: str,
+    title_override: Optional[str] = None
+) -> None:
+    """Background task to extract content, fetch user interests, analyze with AI, compute priority/embeddings, and update DB."""
+    import time
+    import traceback
+    
+    print(f"[PIPELINE LOG] [Background] Starting extraction & enrichment for item {item_id}")
+    logger.info(f"Background extraction & enrichment started for item {item_id}")
+    start_time = time.time()
+    
+    db_updated = False
+    
+    try:
+        # Run independent tasks: content extraction and user interests retrieval concurrently
+        extracted_task = extract_content(clean_url)
+        user_interests_task = asyncio.to_thread(_get_user_interests, user_id)
+        
+        extracted, user_interests = await asyncio.gather(extracted_task, user_interests_task)
+        
+        full_text_val = extracted.get("full_text") or ""
+        description_val = extracted.get("description") or ""
+        transcript_val = extracted.get("transcript") or ""
+        title_val = title_override or extracted.get("title") or clean_url
+        source_type = extracted.get("source_type", "generic")
+        source_name = extracted.get("source_name")
+        source_domain = extracted.get("source_domain")
+        logo_url = extracted.get("logo_url")
+        thumbnail_url = extracted.get("thumbnail_url")
+        estimated_read_time = extracted.get("estimated_read_time")
+        duration_seconds = extracted.get("duration_seconds")
+        author = extracted.get("author")
+        
+        print(f"[PIPELINE LOG] [Background] Extracted content title={title_val!r} type={source_type}")
+        
+        # Resolve content using our new robust helper
+        content_to_use = get_usable_content({
+            "transcript": transcript_val,
+            "extracted_text": full_text_val,
+            "title": title_val,
+            "description": description_val,
+            "author": author,
+            "url": clean_url
+        })
+        
+        if content_to_use:
+            ai = get_ai_service()
+            title_for_ai = "" if source_type == "youtube" else title_val
+            
+            # Run AI analysis (summarization, tagging, priority) and embedding generation concurrently
+            analysis_task = asyncio.to_thread(ai.analyze_content, title_for_ai, content_to_use, source_type)
+            embedding_task = asyncio.to_thread(ai.generate_embedding, content_to_use)
+            
+            analysis, embedding = await asyncio.gather(analysis_task, embedding_task)
+            
+            summary = analysis.get("summary")
+            
+            # Check if summary is valid, if not retry once (only if content is not extremely short)
+            if not summary or summary in ["Content could not be extracted for summarization.", "Summary could not be generated.", "Summary unavailable."]:
+                if len(content_to_use) >= 300:
+                    print(f"[PIPELINE LOG] [Background] AI analysis Attempt 1 returned invalid summary. Retrying...")
+                    # Retry once
+                    analysis = await asyncio.to_thread(ai.analyze_content, title_for_ai, content_to_use, source_type)
+                    summary = analysis.get("summary")
+                
+            if not summary:
+                summary = "Summary could not be generated."
+                
+            tags = analysis.get("tags") or ["uncategorized"]
+            priority_score = analysis.get("priority", 50)
+            
+            word_count = len(content_to_use.split()) if content_to_use else 0
+            est_read_time = max(1, round(word_count / 200)) if word_count else 1
+            if estimated_read_time is None:
+                estimated_read_time = est_read_time
+                
+            new_priority = ai.calculate_priority(
+                title=title_val,
+                summary=summary,
+                tags=tags,
+                source_type=source_type,
+                estimated_time=estimated_read_time,
+                days_since_added=0,
+                user_interests=user_interests
+            )
+            
+            processing_status = "completed"
+        else:
+            summary = "Summary could not be generated."
+            tags = ["uncategorized"]
+            new_priority = 30.0
+            processing_status = "completed"
+            
+        print(f"[PIPELINE LOG] [Background] AI enrichment completed. Saving to DB...")
+        
+        # Save success to DB
+        update_data = {
+            "title": title_val,
+            "description": description_val or None,
+            "content_type": source_type,
+            "source_name": source_name,
+            "source_type": source_type,
+            "source_domain": source_domain,
+            "logo_url": logo_url,
+            "thumbnail_url": thumbnail_url,
+            "estimated_read_time": estimated_read_time,
+            "duration_seconds": duration_seconds,
+            "extracted_text": full_text_val or content_to_use or None,
+            "author": author,
+            "tags": tags,
+            "ai_summary": summary,
+            "priority_score": new_priority,
+            "processing_status": processing_status
+        }
+        
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("items").update(update_data).eq("id", item_id).execute()
+            )
+        except Exception as e:
+            if "column" in str(e).lower():
+                logger.warning("Database update failed due to missing branding columns. Retrying without new columns.")
+                fallback_update_data = {k: v for k, v in update_data.items() if k not in ["source_type", "source_domain", "logo_url"]}
+                await asyncio.to_thread(
+                    lambda: supabase.table("items").update(fallback_update_data).eq("id", item_id).execute()
+                )
+            else:
+                raise e
+
+        db_updated = True
+        print(f"[PIPELINE LOG] [Background] DB updated successfully for item {item_id}")
+        
+        transcript_len = len(transcript_val)
+        extracted_text_len = len(full_text_val)
+        summary_input_len = len(content_to_use)
+        summary_output_len = len(summary) if summary else 0
+
+        print(f"[PIPELINE LOG] run_background_ai_enrichment - transcript_length: {transcript_len}")
+        print(f"[PIPELINE LOG] run_background_ai_enrichment - extracted_text_length: {extracted_text_len}")
+        print(f"[PIPELINE LOG] run_background_ai_enrichment - summary_input_length: {summary_input_len}")
+        print(f"[PIPELINE LOG] run_background_ai_enrichment - summary_output_length: {summary_output_len}")
+        
+        # Schedule audio generation if summary is successful (run in background, do not await)
+        if processing_status == "completed" and summary and summary != "Summary could not be generated.":
+            asyncio.create_task(asyncio.to_thread(_generate_audio, item_id, summary))
+            
+    except Exception as e:
+        logger.error(f"Background extraction/enrichment failed for item {item_id}: {e}", exc_info=True)
+        print(f"[PIPELINE LOG] [Background] Failed for item {item_id}: {e}")
+        traceback.print_exc()
+        
+        if not db_updated:
+            try:
+                update_data = {
+                    "ai_summary": "Summary could not be generated.",
+                    "processing_status": "failed",
+                }
+                await asyncio.to_thread(
+                    lambda: supabase.table("items").update(update_data).eq("id", item_id).execute()
+                )
+                print(f"[PIPELINE LOG] [Background] DB updated to 'failed' for item {item_id}")
+            except Exception as db_err:
+                logger.error(f"Failed to update item {item_id} on failure: {db_err}")
+                
+        raise e
+
+
+async def recover_processing_items():
+    print("[RECOVERY] Starting processing items recovery worker...")
+    try:
+        res = supabase.table("items").select("*").eq("processing_status", "processing").execute()
+        items = res.data or []
+        print(f"[RECOVERY] Found {len(items)} items in 'processing' state.")
+        now = datetime.now(timezone.utc)
+        for item in items:
+            item_id = item.get("id")
+            added_at_str = item.get("added_at")
+            ai_summary = item.get("ai_summary")
+            url = item.get("url")
+            user_id = item.get("user_id")
+            title = item.get("title")
+
+            has_valid_summary = False
+            if ai_summary:
+                has_valid_summary = is_valid_content_for_summary(ai_summary)
+
+            if has_valid_summary:
+                print(f"[RECOVERY] Item {item_id} has a valid summary. Marking as completed.")
+                supabase.table("items").update({
+                    "processing_status": "completed"
+                }).eq("id", item_id).execute()
+                continue
+
+            is_stale = False
+            if added_at_str:
+                try:
+                    clean_added = added_at_str.replace("Z", "+00:00")
+                    added_at = datetime.fromisoformat(clean_added)
+                    if now - added_at > timedelta(minutes=10):
+                        is_stale = True
+                except Exception as e:
+                    logger.error(f"[RECOVERY] Error parsing added_at for item {item_id}: {e}")
+            
+            if is_stale:
+                print(f"[RECOVERY] Item {item_id} has been processing for >10 mins. Marking as failed.")
+                supabase.table("items").update({
+                    "processing_status": "failed",
+                    "ai_summary": "Summary could not be generated."
+                }).eq("id", item_id).execute()
+            else:
+                print(f"[RECOVERY] Resuming AI processing for item {item_id}...")
+                asyncio.create_task(
+                    run_background_extraction_and_enrichment(
+                        item_id,
+                        url,
+                        user_id,
+                        title
+                    )
+                )
+    except Exception as e:
+        logger.error(f"[RECOVERY] Failed to run recovery: {e}", exc_info=True)
+        print(f"[RECOVERY] Failed: {e}")
+
+
+
 # ---------------------------------------------------------------------------
 # POST /api/items — Create
 # ---------------------------------------------------------------------------
@@ -163,8 +577,8 @@ async def create_item(req: ItemCreate, background_tasks: BackgroundTasks, user_i
         clean_url = req.url.strip()
 
         # Duplicate check
-        existing = (
-            supabase.table("items")
+        existing = await asyncio.to_thread(
+            lambda: supabase.table("items")
             .select("*")
             .eq("user_id", user_id)
             .eq("url", clean_url)
@@ -174,108 +588,65 @@ async def create_item(req: ItemCreate, background_tasks: BackgroundTasks, user_i
             print(f"[items] Duplicate URL for user {user_id}, returning existing item")
             return item_to_response(existing.data[0])
 
-        # Extract content
-        print(f"[items] Extracting content: {clean_url}")
-        extracted = await extract_content(clean_url)
-        print(f"[items] Extracted content title={extracted.get('title', '?')!r} type={extracted.get('source_type', '?')}")
-        # 1. Extractor Stage Logs
-        full_text_val = extracted.get("full_text") or ""
-        description_val = extracted.get("description") or ""
-        transcript_val = extracted.get("transcript") or ""
-        title_val = req.title or extracted.get("title") or clean_url
-        title = title_val
-        source_type = extracted.get("source_type", "generic")
+        # Synchronous, instant source detection
+        platform_info = resolve_platform_info(clean_url)
+        title = req.title or clean_url
 
-        print(f"[PIPELINE LOG] [Extractor] URL: {clean_url}")
-        print(f"[PIPELINE LOG] [Extractor] extracted_text length: {len(full_text_val)}")
-        print(f"[PIPELINE LOG] [Extractor] full_text length: {len(full_text_val)}")
-        print(f"[PIPELINE LOG] [Extractor] description length: {len(description_val)}")
-        print(f"[PIPELINE LOG] [Extractor] transcript length: {len(transcript_val)}")
-
-        # Resolve content using priority: full_text (or transcript) -> extracted_text -> description -> title
-        content_to_use = ""
-        used_source = ""
-
-        if source_type == "youtube":
-            content_to_use = transcript_val or full_text_val
-            used_source = "transcript" if transcript_val else "full_text"
-            if not content_to_use:
-                content_to_use = description_val
-                used_source = "description"
-            if not content_to_use:
-                content_to_use = title_val
-                used_source = "title"
-            title_for_ai = ""
-        else:
-            if full_text_val:
-                content_to_use = full_text_val
-                used_source = "full_text"
-            elif extracted.get("extracted_text"):
-                content_to_use = extracted.get("extracted_text")
-                used_source = "extracted_text"
-            elif description_val:
-                content_to_use = description_val
-                used_source = "description"
-            else:
-                content_to_use = title_val
-                used_source = "title"
-            title_for_ai = title_val
-
-        print(f"[PIPELINE LOG] [API] Resolved content source: {used_source}, content length: {len(content_to_use)}")
-
-        # AI enrichment with error handling
-        ai = get_ai_service()
-        
-        # Check text length for "Limited text available" rule
-        if len(content_to_use.strip()) < 300:
-            print(f"[PIPELINE LOG] [API] Content length genuinely less than 300. Bypassing AI.")
-            tags = ["uncategorized"]
-            summary = "Limited text available"
-            priority_score = 30
-        else:
-            try:
-                analysis = ai.analyze_content(title_for_ai, content_to_use, source_type)
-            except Exception as e:
-                logger.error(f"AI analysis failed for item {clean_url}: {e}")
-                analysis = {"tags": ["uncategorized"], "summary": "AI summary could not be generated.", "priority": 50}
-            tags = analysis["tags"]
-            summary = analysis.get("summary") or "AI summary could not be generated."
-            priority_score = analysis["priority"]
-
-        print(f"[items] Tags: {tags}, Priority: {priority_score}, Summary length: {len(summary)}")
-
-        # Build DB row
+        # Build initial DB row with 'processing' status
         item_data = {
             "user_id": user_id,
             "url": clean_url,
             "title": title,
-            "description": extracted.get("description"),
-            "content_type": source_type,
-            "source_name": extracted.get("source_name"),
-            "thumbnail_url": extracted.get("thumbnail_url"),
-            "estimated_read_time": extracted.get("estimated_read_time"),
-            "duration_seconds": extracted.get("duration_seconds"),
-            "extracted_text": extracted.get("full_text"),
-            "author": extracted.get("author"),
-            "tags": tags,
-            "ai_summary": summary,
-            "priority_score": priority_score,
+            "content_type": platform_info["source_type"],
+            "source_name": platform_info["source_name"],
+            "source_type": platform_info["source_type"],
+            "source_domain": platform_info["source_domain"],
+            "logo_url": platform_info["logo_url"],
+            "tags": ["uncategorized"],
+            "ai_summary": "Generating AI summary...",
+            "priority_score": 50.0,
             "status": "unread",
+            "processing_status": "processing",
             "is_favorite": False,
         }
 
-        result = supabase.table("items").insert(item_data).execute()
+        try:
+            result = await asyncio.to_thread(
+                lambda: supabase.table("items").insert(item_data).execute()
+            )
+        except Exception as e:
+            if "column" in str(e).lower():
+                logger.warning("Database insert failed due to missing branding columns. Retrying without new columns.")
+                fallback_item_data = {k: v for k, v in item_data.items() if k not in ["source_type", "source_domain", "logo_url"]}
+                result = await asyncio.to_thread(
+                    lambda: supabase.table("items").insert(fallback_item_data).execute()
+                )
+            else:
+                raise e
         if not result.data:
             raise Exception("Failed to insert item into database")
 
+        print("[PIPELINE LOG] Database saved initially")
+        logger.info("Database saved initially")
+
         item_id = result.data[0].get('id')
-        db_summary = result.data[0].get('ai_summary') or ""
         print(f"[items] Saved item id={item_id}")
-        print(f"[PIPELINE LOG] [Database] Saved item ID: {item_id}, database ai_summary length: {len(db_summary)}")
-        # Schedule async audio generation if summary available
-        if summary:
-            background_tasks.add_task(_generate_audio, item_id, summary)
-        return item_to_response(result.data[0])
+        
+        # Schedule the slow extraction and enrichment process as a background task
+        background_tasks.add_task(
+            run_background_extraction_and_enrichment,
+            item_id,
+            clean_url,
+            user_id,
+            req.title
+        )
+            
+        return {
+            "success": True,
+            "message": "Saved to Queue",
+            "id": item_id,
+            "title": title
+        }
 
     except HTTPException:
         raise
@@ -329,7 +700,7 @@ async def get_items(
         # Pagination
         query = query.range(offset, offset + limit - 1)
 
-        result = query.execute()
+        result = await asyncio.to_thread(query.execute)
         items = [item_to_response(r) for r in (result.data or [])]
         total = result.count if result.count is not None else len(items)
 
@@ -354,8 +725,8 @@ async def search_items(
     user_id: str = Depends(get_user_id),
 ):
     try:
-        result = (
-            supabase.table("items")
+        result = await asyncio.to_thread(
+            lambda: supabase.table("items")
             .select("*")
             .eq("user_id", user_id)
             .or_(f"title.ilike.%{q}%,description.ilike.%{q}%")
@@ -379,8 +750,8 @@ async def search_items(
 @router.get("/{item_id}")
 async def get_item(item_id: str, user_id: str = Depends(get_user_id)):
     try:
-        result = (
-            supabase.table("items")
+        result = await asyncio.to_thread(
+            lambda: supabase.table("items")
             .select("*")
             .eq("id", item_id)
             .eq("user_id", user_id)
@@ -403,8 +774,8 @@ async def generate_audio_summary(item_id: str, user_id: str = Depends(get_user_i
     Returns the URL to the MP3 file served via the static audio mount.
     """
     # Fetch the item
-    result = (
-        supabase.table("items")
+    result = await asyncio.to_thread(
+        lambda: supabase.table("items")
         .select("*")
         .eq("id", item_id)
         .eq("user_id", user_id)
@@ -421,7 +792,9 @@ async def generate_audio_summary(item_id: str, user_id: str = Depends(get_user_i
     if audio_url:
         # Update DB with audio_url if not already stored
         try:
-            supabase.table("items").update({"audio_url": audio_url}).eq("id", item_id).execute()
+            await asyncio.to_thread(
+                lambda: supabase.table("items").update({"audio_url": audio_url}).eq("id", item_id).execute()
+            )
         except Exception as e:
             print(f"[items] Failed to store audio_url for {item_id}: {e}")
         return {"audio_url": audio_url}
@@ -448,8 +821,8 @@ async def edit_item(item_id: str, req: ItemEdit, user_id: str = Depends(get_user
         if not update_data:
             return await get_item(item_id, user_id)
 
-        result = (
-            supabase.table("items")
+        result = await asyncio.to_thread(
+            lambda: supabase.table("items")
             .update(update_data)
             .eq("id", item_id)
             .eq("user_id", user_id)
@@ -487,8 +860,8 @@ async def update_item(item_id: str, req: ItemUpdate, user_id: str = Depends(get_
         if not update_data:
             return await get_item(item_id, user_id)
 
-        result = (
-            supabase.table("items")
+        result = await asyncio.to_thread(
+            lambda: supabase.table("items")
             .update(update_data)
             .eq("id", item_id)
             .eq("user_id", user_id)
@@ -511,7 +884,9 @@ async def update_item(item_id: str, req: ItemUpdate, user_id: str = Depends(get_
 @router.delete("/{item_id}")
 async def delete_item(item_id: str, user_id: str = Depends(get_user_id)):
     try:
-        supabase.table("items").delete().eq("id", item_id).eq("user_id", user_id).execute()
+        await asyncio.to_thread(
+            lambda: supabase.table("items").delete().eq("id", item_id).eq("user_id", user_id).execute()
+        )
         return {"message": "Item deleted"}
     except Exception as e:
         print(f"[items] delete_item error: {e}")
@@ -528,7 +903,7 @@ async def backfill_summaries(user_id: str = Depends(get_user_id)):
     # Fetch items with null or empty ai_summary
     result = (
         supabase.table("items")
-        .select("id, title, description, extracted_text, ai_summary, content_type, transcript")
+        .select("id, title, description, extracted_text, ai_summary, content_type")
         .eq("user_id", user_id)
         .execute()
     )
@@ -536,54 +911,112 @@ async def backfill_summaries(user_id: str = Depends(get_user_id)):
     updated = 0
     ai = get_ai_service()
     for row in items:
-        if row.get("ai_summary"):
+        ai_summary = row.get("ai_summary")
+        if ai_summary and ai_summary not in ["Summary could not be generated.", "Content could not be extracted for summarization.", "Summary unavailable.", "Limited text available"]:
             continue
-        title = row.get("title") or ""
-        description = row.get("description") or ""
-        content_type = row.get("content_type") or "generic"
         
-        # Priority: full_text (or transcript) -> extracted_text -> description -> title
-        resolved_content = ""
-        used_source = ""
-        
-        if content_type == "youtube":
-            resolved_content = row.get("transcript") or row.get("extracted_text") or ""
-            used_source = "transcript" if row.get("transcript") else "extracted_text"
-            if not resolved_content:
-                resolved_content = description
-                used_source = "description"
-            if not resolved_content:
-                resolved_content = title
-                used_source = "title"
-            title_for_ai = ""
-        else:
-            if row.get("extracted_text"):
-                resolved_content = row.get("extracted_text")
-                used_source = "extracted_text"
-            elif description:
-                resolved_content = description
-                used_source = "description"
-            else:
-                resolved_content = title
-                used_source = "title"
-            title_for_ai = title
-
-        print(f"[PIPELINE LOG] [API] [backfill_summaries] resolved content source: {used_source}, length: {len(resolved_content)}")
-        print(f"[PIPELINE LOG] [API] [backfill_summaries] extracted_text length: {len(row.get('extracted_text') or '')}")
-
-        if len(resolved_content.strip()) < 300:
-            summary = "Limited text available"
-        else:
-            summary = ai.generate_summary(title=title_for_ai, content=resolved_content, description=description, content_type=content_type)
-            if not summary:
-                summary = "AI summary could not be generated."
-
+        item_id = row.get("id")
         try:
-            supabase.table("items").update({"ai_summary": summary}).eq("id", row.get("id")).execute()
+            print(f"[PIPELINE LOG] [backfill_summaries] Setting processing_status to 'processing' for item {item_id}")
+            supabase.table("items").update({"processing_status": "processing"}).eq("id", item_id).execute()
+        except Exception as p_err:
+            logger.warning(f"Could not update processing_status to processing for item {item_id}: {p_err}")
+
+        title = row.get("title") or ""
+        content_type = row.get("content_type") or "generic"
+        transcript_val = row.get("transcript") or ""
+        extracted_text_val = row.get("extracted_text") or ""
+        title_for_ai = "" if content_type == "youtube" else title
+
+        resolved_content = get_usable_content({
+            "transcript": transcript_val,
+            "extracted_text": extracted_text_val,
+            "title": title,
+            "description": row.get("description"),
+            "author": row.get("author"),
+            "url": row.get("url")
+        })
+
+        summary = None
+        db_updated = False
+        
+        print(f"[PIPELINE LOG] [backfill_summaries] Starting summary generation for item {item_id}...")
+        try:
+            if not resolved_content:
+                summary = "Summary could not be generated."
+                print(f"[PIPELINE LOG] [backfill_summaries] No valid content for summary.")
+            else:
+                # Attempt 1
+                print(f"[PIPELINE LOG] [backfill_summaries] Attempt 1...")
+                try:
+                    summary = ai.generate_summary(title=title_for_ai, content=resolved_content, content_type=content_type)
+                    print(f"[PIPELINE LOG] [backfill_summaries] Attempt 1 succeeded.")
+                except Exception as e:
+                    logger.warning(f"[backfill_summaries] attempt 1 failed: {e}")
+                    print(f"[PIPELINE LOG] [backfill_summaries] Attempt 1 failed: {e}")
+                
+                # Check fallback/failure
+                if not summary or summary in ["Content could not be extracted for summarization.", "Summary could not be generated.", "Summary unavailable."]:
+                    # Retry once
+                    print(f"[PIPELINE LOG] [backfill_summaries] Attempt 2 (Retry)...")
+                    try:
+                        summary = ai.generate_summary(title=title_for_ai, content=resolved_content, content_type=content_type)
+                        print(f"[PIPELINE LOG] [backfill_summaries] Attempt 2 succeeded.")
+                    except Exception as e:
+                        logger.error(f"[backfill_summaries] retry failed: {e}")
+                        print(f"[PIPELINE LOG] [backfill_summaries] Attempt 2 failed: {e}")
+                        raise e # never swallow exceptions
+                
+                if not summary or summary in ["Content could not be extracted for summarization.", "Summary could not be generated.", "Summary unavailable."]:
+                    raise ValueError(f"AI Analysis failed to generate a valid summary. Got: {summary}")
+
+            transcript_len = len(transcript_val)
+            extracted_text_len = len(extracted_text_val)
+            summary_input_len = len(resolved_content)
+            summary_output_len = len(summary) if summary else 0
+
+            print(f"[PIPELINE LOG] backfill_summaries - transcript_length: {transcript_len}")
+            print(f"[PIPELINE LOG] backfill_summaries - extracted_text_length: {extracted_text_len}")
+            print(f"[PIPELINE LOG] backfill_summaries - summary_input_length: {summary_input_len}")
+            print(f"[PIPELINE LOG] backfill_summaries - summary_output_length: {summary_output_len}")
+
+            logger.info(f"transcript_length: {transcript_len}")
+            logger.info(f"extracted_text_length: {extracted_text_len}")
+            logger.info(f"summary_input_length: {summary_input_len}")
+            logger.info(f"summary_output_length: {summary_output_len}")
+
+            processing_status = "completed" if summary and summary != "Summary could not be generated." else "failed"
+            print(f"[PIPELINE LOG] [Database] [backfill_summaries] Updating DB with status='{processing_status}' for item {item_id}...")
+            update_data = {
+                "ai_summary": summary,
+                "processing_status": processing_status,
+                "extracted_text": extracted_text_val or resolved_content
+            }
+            supabase.table("items").update(update_data).eq("id", item_id).execute()
+            db_updated = True
             updated += 1
             print(f"[PIPELINE LOG] [Database] [backfill_summaries] Saved to DB. ai_summary length: {len(summary)}")
+            
         except Exception as e:
-            logger.error(f"Backfill failed for item {row.get('id')}: {e}")
+            logger.error(f"Backfill failed for item {item_id}: {e}", exc_info=True)
+            print(f"[PIPELINE LOG] [backfill_summaries] Failed: {e}")
+            
+            if not db_updated:
+                try:
+                    print(f"[PIPELINE LOG] [Database] [backfill_summaries] Updating DB with failed status...")
+                    update_data = {
+                        "ai_summary": "Summary could not be generated.",
+                        "processing_status": "failed",
+                        "extracted_text": extracted_text_val or resolved_content
+                    }
+                    supabase.table("items").update(update_data).eq("id", item_id).execute()
+                    print(f"[PIPELINE LOG] [Database] [backfill_summaries] DB updated to 'failed' successfully.")
+                except Exception as db_err:
+                    logger.error(f"Failed to update item {item_id} on failure: {db_err}")
+                    print(f"[PIPELINE LOG] [Database] [backfill_summaries] CRITICAL: Failed to update DB on failure: {db_err}")
+            
+            raise e
+            
     return {"updated": updated}
 
 @router.post("/recalculate-priorities")
@@ -674,8 +1107,8 @@ async def get_recommendations(user_id: str = Depends(get_user_id)):
 @router.get("/user/streak")
 async def get_user_streak(user_id: str = Depends(get_user_id)):
     try:
-        result = (
-            supabase.table("items")
+        result = await asyncio.to_thread(
+            lambda: supabase.table("items")
             .select("added_at, completed_at, estimated_read_time, status")
             .eq("user_id", user_id)
             .execute()

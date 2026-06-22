@@ -137,6 +137,7 @@ async def add_item(
             "duration_seconds": content.get("duration_seconds"),
             "extracted_text": content.get("full_text"),
             "status": "unread",
+            "processing_status": "completed",
             "tags": ai_tags,
             "ai_summary": ai_summary,
             "priority_score": priority_score,

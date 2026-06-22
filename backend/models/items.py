@@ -36,6 +36,9 @@ class QueueItemResponse(BaseModel):
     description: Optional[str] = None
     content_type: str = "generic"
     source_name: Optional[str] = None
+    source_type: Optional[str] = None
+    source_domain: Optional[str] = None
+    logo_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     estimated_read_time: Optional[int] = None
     duration_seconds: Optional[int] = None
@@ -46,6 +49,7 @@ class QueueItemResponse(BaseModel):
     priority_score: float = 50.0
     audio_url: Optional[str] = None
     status: str = "unread"
+    processing_status: str = "completed"
     is_favorite: bool = False
     added_at: Optional[str] = None
 

@@ -18,8 +18,18 @@ from config import FRONTEND_URL, get_settings
 
 app = FastAPI(title="QueueIt API", version="1.0.0")
 
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    from api.items import recover_processing_items
+    asyncio.create_task(recover_processing_items())
+
+
 os.makedirs(get_settings().STATIC_AUDIO_PATH, exist_ok=True)
 app.mount("/static/audio", StaticFiles(directory=get_settings().STATIC_AUDIO_PATH), name="audio")
+
+os.makedirs("static/favicons", exist_ok=True)
+app.mount("/static/favicons", StaticFiles(directory="static/favicons"), name="favicons")
 
 app.add_middleware(
     CORSMiddleware,

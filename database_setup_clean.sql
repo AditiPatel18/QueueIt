@@ -36,6 +36,7 @@ CREATE TABLE items (
     summary TEXT,
     priority_score INTEGER DEFAULT 0,
     status TEXT DEFAULT 'unread' CHECK (status IN ('unread', 'reading', 'completed', 'archived')),
+    processing_status TEXT DEFAULT 'completed' CHECK (processing_status IN ('processing', 'completed', 'failed')),
     is_favorite BOOLEAN DEFAULT false,
     added_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     completed_at TIMESTAMP WITH TIME ZONE

@@ -20,9 +20,80 @@ import {
   Award,
 } from "lucide-react";
 import { toast } from "sonner";
-import { getItems, recalculatePriorities, getStreakData } from "@/lib/api";
+import { getItems, recalculatePriorities, getStreakData, getItem } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 import type { QueueItem, StatusFilter, TypeFilter, SortOption } from "@/types";
+
+function mapDbItemToQueueItem(dbItem: any): QueueItem {
+  let tags: string[] = [];
+  if (dbItem.tags) {
+    if (Array.isArray(dbItem.tags)) {
+      tags = dbItem.tags;
+    } else if (typeof dbItem.tags === 'string') {
+      tags = dbItem.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+    }
+  }
+
+  return {
+    id: dbItem.id,
+    user_id: dbItem.user_id,
+    url: dbItem.url,
+    title: dbItem.title,
+    description: dbItem.description,
+    content_type: dbItem.content_type || "generic",
+    source_name: dbItem.source_name,
+    thumbnail_url: dbItem.thumbnail_url,
+    estimated_read_time: dbItem.estimated_read_time,
+    duration_seconds: dbItem.duration_seconds,
+    extracted_text: dbItem.extracted_text,
+    author: dbItem.author,
+    tags,
+    ai_summary: dbItem.ai_summary,
+    priority_score: dbItem.priority_score ?? 50.0,
+    status: dbItem.status || "unread",
+    processing_status: dbItem.processing_status || "completed",
+    is_favorite: !!dbItem.is_favorite,
+    created_at: dbItem.created_at || dbItem.added_at,
+    audio_url: dbItem.audio_url,
+  };
+}
+
+function sortItems(itemsList: QueueItem[], sortOption: SortOption): QueueItem[] {
+  return [...itemsList].sort((a, b) => {
+    if (sortOption === "priority") {
+      return (b.priority_score ?? 0) - (a.priority_score ?? 0);
+    }
+    if (sortOption === "shortest") {
+      return (a.estimated_read_time ?? 0) - (b.estimated_read_time ?? 0);
+    }
+    if (sortOption === "longest") {
+      return (b.estimated_read_time ?? 0) - (a.estimated_read_time ?? 0);
+    }
+    const dateA = new Date(a.created_at || a.added_at || 0).getTime();
+    const dateB = new Date(b.created_at || b.added_at || 0).getTime();
+    return dateB - dateA;
+  });
+}
+
+function matchesFilters(
+  item: QueueItem,
+  statusFilter: StatusFilter,
+  typeFilter: TypeFilter,
+  activeTag: string | null,
+  search: string
+): boolean {
+  if (statusFilter !== "all" && item.status !== statusFilter) return false;
+  if (typeFilter !== "all" && item.content_type !== typeFilter) return false;
+  if (activeTag && !item.tags.includes(activeTag)) return false;
+  if (search) {
+    const s = search.toLowerCase();
+    const titleMatch = item.title?.toLowerCase().includes(s);
+    const descMatch = item.description?.toLowerCase().includes(s);
+    if (!titleMatch && !descMatch) return false;
+  }
+  return true;
+}
+
 
 interface QueueListProps {
   refreshSignal?: number;
@@ -68,10 +139,30 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [sort, setSort] = useState<SortOption>("newest");
 
+  const [visibleCount, setVisibleCount] = useState(15);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const hasFilters = search || activeTag || statusFilter !== "all" || typeFilter !== "all" || sort !== "newest";
+
+  // Load from localStorage instantly on mount to avoid layout shift
+  useEffect(() => {
+    const cached = localStorage.getItem("queueit_items_cache");
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          setItems(parsed);
+          setTotal(parsed.length);
+          setLoading(false);
+        }
+      } catch (e) {
+        console.error("Failed to parse cached items", e);
+      }
+    }
+  }, []);
 
   const fetchItems = useCallback(
     async (opts: { showRefreshing?: boolean } = {}) => {
@@ -88,21 +179,27 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
           tag: activeTag || undefined,
           search: search || undefined,
           sort,
-          limit: 50,
+          limit: 100, // Load a larger batch so we don't have to refetch
         });
 
         if (!res) throw new Error("Failed to fetch items");
 
+        let fetchedItems: QueueItem[] = [];
+        let fetchedTotal = 0;
+
         if (res && typeof res === "object" && "items" in res) {
-          setItems(res.items as QueueItem[]);
-          setTotal(res.total as number);
+          fetchedItems = res.items as QueueItem[];
+          fetchedTotal = res.total as number;
         } else if (Array.isArray(res)) {
-          setItems(res as QueueItem[]);
-          setTotal(res.length);
-        } else {
-          setItems([]);
-          setTotal(0);
+          fetchedItems = res as QueueItem[];
+          fetchedTotal = res.length;
         }
+
+        setItems(fetchedItems);
+        setTotal(fetchedTotal);
+
+        // Cache queue
+        localStorage.setItem("queueit_items_cache", JSON.stringify(fetchedItems));
       } catch (err: any) {
         console.error("[QueueList] fetch error:", err);
         const message = typeof err === "string" ? err : err instanceof Error ? err.message : JSON.stringify(err, null, 2);
@@ -142,7 +239,7 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
     };
   }, [fetchItems]);
 
-  // Realtime subscription for items table
+  // Realtime subscription for items table - incremental state updates
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
@@ -154,8 +251,39 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
           schema: "public",
           table: "items",
         },
-        () => {
-          fetchItems();
+        (payload) => {
+          console.log("[Realtime] received event:", payload.eventType, payload);
+          if (payload.eventType === "INSERT") {
+            const newItem = mapDbItemToQueueItem(payload.new);
+            if (!matchesFilters(newItem, statusFilter, typeFilter, activeTag, search)) return;
+            setItems((prev) => {
+              if (prev.some((item) => item.id === newItem.id)) return prev;
+              const next = [newItem, ...prev];
+              const sorted = sortItems(next, sort);
+              localStorage.setItem("queueit_items_cache", JSON.stringify(sorted));
+              return sorted;
+            });
+            setTotal((prev) => prev + 1);
+          } else if (payload.eventType === "UPDATE") {
+            const updatedItem = mapDbItemToQueueItem(payload.new);
+            setItems((prev) => {
+              let next = prev.map((item) => (item.id === updatedItem.id ? updatedItem : item));
+              if (!matchesFilters(updatedItem, statusFilter, typeFilter, activeTag, search)) {
+                next = next.filter((item) => item.id !== updatedItem.id);
+              }
+              const sorted = sortItems(next, sort);
+              localStorage.setItem("queueit_items_cache", JSON.stringify(sorted));
+              return sorted;
+            });
+          } else if (payload.eventType === "DELETE") {
+            const deletedId = payload.old.id;
+            setItems((prev) => {
+              const next = prev.filter((item) => item.id !== deletedId);
+              localStorage.setItem("queueit_items_cache", JSON.stringify(next));
+              return next;
+            });
+            setTotal((prev) => Math.max(0, prev - 1));
+          }
         }
       )
       .subscribe();
@@ -163,7 +291,135 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [fetchItems]);
+  }, [sort, statusFilter, typeFilter, activeTag, search]);
+
+  // Reset visibleCount when filters change
+  useEffect(() => {
+    setVisibleCount(15);
+  }, [search, activeTag, statusFilter, typeFilter, sort]);
+
+  // Unified Poller for processing items - runs every 2s
+  useEffect(() => {
+    const processingItems = items.filter((item) => item.processing_status === "processing");
+    if (processingItems.length === 0) return;
+
+    const interval = setInterval(() => {
+      processingItems.forEach(async (pItem) => {
+        try {
+          const updated = await getItem(pItem.id);
+          if (updated && updated.processing_status !== "processing") {
+            setItems((prev) => {
+              const next = prev.map((item) => (item.id === pItem.id ? mapDbItemToQueueItem(updated) : item));
+              localStorage.setItem("queueit_items_cache", JSON.stringify(next));
+              return next;
+            });
+          }
+        } catch (e) {
+          console.error("Poller failed for item", pItem.id, e);
+        }
+      });
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [items]);
+
+  // IntersectionObserver for incremental virtualization
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setVisibleCount((prev) => Math.min(prev + 15, items.length));
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(sentinel);
+    return () => {
+      if (sentinel) {
+        observer.unobserve(sentinel);
+      }
+    };
+  }, [items.length, visibleCount]);
+
+  // Optimistic Handlers
+  const handleStatusChangeOptimistic = useCallback(async (id: string, newStatus: QueueItem["status"]) => {
+    const oldItems = [...items];
+    
+    setItems((prev) => {
+      const next = prev.map((item) => {
+        if (item.id === id) {
+          return { ...item, status: newStatus };
+        }
+        return item;
+      });
+      const filtered = next.filter((item) => matchesFilters(item, statusFilter, typeFilter, activeTag, search));
+      localStorage.setItem("queueit_items_cache", JSON.stringify(filtered));
+      return filtered;
+    });
+
+    try {
+      const res = await updateItem(id, { status: newStatus });
+      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+      toast.success(newStatus === "completed" ? "Marked as complete! ✓" : "Status updated");
+    } catch (e: any) {
+      setItems(oldItems);
+      localStorage.setItem("queueit_items_cache", JSON.stringify(oldItems));
+      toast.error("Failed to update status", { description: e.message });
+    }
+  }, [items, statusFilter, typeFilter, activeTag, search]);
+
+  const handleFavoriteToggleOptimistic = useCallback(async (id: string) => {
+    const oldItems = [...items];
+    let isFav = false;
+    
+    setItems((prev) => {
+      const next = prev.map((item) => {
+        if (item.id === id) {
+          isFav = !item.is_favorite;
+          return { ...item, is_favorite: isFav };
+        }
+        return item;
+      });
+      localStorage.setItem("queueit_items_cache", JSON.stringify(next));
+      return next;
+    });
+
+    try {
+      const res = await updateItem(id, { is_favorite: isFav });
+      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+      toast.success(isFav ? "Added to favorites ★" : "Removed from favorites");
+    } catch (e: any) {
+      setItems(oldItems);
+      localStorage.setItem("queueit_items_cache", JSON.stringify(oldItems));
+      toast.error("Failed to update favorite", { description: e.message });
+    }
+  }, [items]);
+
+  const handleDeleteOptimistic = useCallback(async (id: string) => {
+    const oldItems = [...items];
+    
+    setItems((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      localStorage.setItem("queueit_items_cache", JSON.stringify(next));
+      return next;
+    });
+    setTotal((prev) => Math.max(0, prev - 1));
+
+    try {
+      const res = await deleteItem(id);
+      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+      toast.success("Item deleted");
+    } catch (e: any) {
+      setItems(oldItems);
+      setTotal(oldItems.length);
+      localStorage.setItem("queueit_items_cache", JSON.stringify(oldItems));
+      toast.error("Failed to delete item", { description: e.message });
+    }
+  }, [items]);
 
   const handleRefresh = () => {
     fetchItems({ showRefreshing: true });
@@ -402,14 +658,22 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
       ) : (
         /* Items list */
         <div className="space-y-3">
-          {items.map((item) => (
+          {items.slice(0, visibleCount).map((item) => (
             <QueueItemCard
               key={item.id}
               item={item}
               onUpdate={handleRefresh}
               onTagClick={handleTagClick}
+              onDeleteOptimistic={handleDeleteOptimistic}
+              onStatusChangeOptimistic={handleStatusChangeOptimistic}
+              onFavoriteToggleOptimistic={handleFavoriteToggleOptimistic}
             />
           ))}
+          {items.length > visibleCount && (
+            <div ref={sentinelRef} className="h-10 flex items-center justify-center pt-2">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            </div>
+          )}
         </div>
       )}
     </div>

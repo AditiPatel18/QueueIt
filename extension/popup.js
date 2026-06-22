@@ -104,7 +104,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (parsed.access_token) {
                         console.log("Access token extracted");
                         console.log("TOKEN:", parsed.access_token);
-                        alert(parsed.access_token.substring(0, 50));
                         return resolve(parsed.access_token);
                     }
 
@@ -154,10 +153,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Success
+            const successTextEl = successOverlay.querySelector('p');
+            if (successTextEl) {
+                successTextEl.textContent = "Saved to Queue ✓";
+            }
             successOverlay.classList.remove('hidden');
             setTimeout(() => {
                 window.close();
-            }, 1500);
+            }, 1000);
 
         } catch (error) {
             showError(error.message);
