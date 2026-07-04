@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS public.items (
     thumbnail_url TEXT,
     source_name TEXT,
     estimated_read_time INTEGER,
+    estimated_time_minutes NUMERIC,
+    actual_time_spent NUMERIC DEFAULT 0.0,
     duration_seconds INTEGER,
     extracted_text TEXT,
     status TEXT DEFAULT 'queued',

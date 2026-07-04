@@ -27,15 +27,17 @@ import {
   CircleDot,
   Edit,
   Sparkles,
-  Flame,
-  Star,
   Heart,
   Bookmark,
   PauseCircle,
   ChevronDown,
+  FolderOpen,
+  AlertTriangle,
 } from "lucide-react";
 import type { QueueItem } from "@/types";
-import { updateItem, editItem, deleteItem } from "@/lib/api";
+import { updateItem, editItem, deleteItem, retryAI } from "@/lib/api";
+import { useCollections, ANALYTICS_CACHE_KEY } from "@/hooks/use-swr-queries";
+import { mutate } from "swr";
 
 interface QueueItemCardProps {
   item: QueueItem;
@@ -57,6 +59,20 @@ function formatDuration(seconds: number): string {
   return `${mins} min`;
 }
 
+function formatTimeSpent(minutes?: number | null): string {
+  if (!minutes) return "0 min";
+  if (minutes < 1) {
+    const secs = Math.round(minutes * 60);
+    return `${secs}s`;
+  }
+  const mins = Math.floor(minutes);
+  const secs = Math.round((minutes - mins) * 60);
+  if (secs > 0) {
+    return `${mins}m ${secs}s`;
+  }
+  return `${mins} min`;
+}
+
 function timeAgo(dateString: string): string {
   try {
     const now = new Date();
@@ -73,37 +89,6 @@ function timeAgo(dateString: string): string {
     return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   } catch {
     return "";
-  }
-}
-
-function getPriorityColor(score: number): string {
-  if (score >= 75) return "text-red-400 border-red-500/20 bg-red-500/10";
-  if (score >= 50) return "text-orange-400 border-orange-500/20 bg-orange-500/10";
-  return "text-slate-400 border-slate-500/20 bg-slate-500/10";
-}
-
-function getSourceMeta(sourceType: string) {
-  switch (sourceType) {
-    case "youtube":
-      return { Icon: PlayCircle, label: "YouTube", badgeClass: "bg-red-500/10 text-red-400 border-red-500/20" };
-
-    case "twitter":
-      return { Icon: MessageSquare, label: "Twitter/X", badgeClass: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20" };
-
-    case "reddit":
-      return { Icon: MessageSquare, label: "Reddit", badgeClass: "bg-orange-500/10 text-orange-400 border-orange-500/20" };
-
-    case "github":
-      return { Icon: GitBranch, label: "GitHub", badgeClass: "bg-neutral-500/10 text-neutral-450 border-neutral-500/20" };
-
-    case "instagram":
-      return { Icon: MessageSquare, label: "Instagram", badgeClass: "bg-pink-500/10 text-pink-400 border-pink-500/20" };
-
-    case "article":
-      return { Icon: BookOpen, label: "Article", badgeClass: "bg-blue-500/10 text-blue-400 border-blue-500/20" };
-
-    default:
-      return { Icon: ExternalLink, label: "Link", badgeClass: "bg-purple-500/10 text-purple-400 border-purple-500/20" };
   }
 }
 
@@ -154,6 +139,23 @@ const statusConfig = {
   },
 } as const;
 
+function getSourceMeta(sourceType: string) {
+  switch (sourceType) {
+    case "youtube":
+      return { Icon: PlayCircle, label: "YouTube" };
+    case "twitter":
+      return { Icon: MessageSquare, label: "Twitter/X" };
+    case "reddit":
+      return { Icon: MessageSquare, label: "Reddit" };
+    case "github":
+      return { Icon: GitBranch, label: "GitHub" };
+    case "article":
+      return { Icon: BookOpen, label: "Article" };
+    default:
+      return { Icon: ExternalLink, label: "Link" };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -167,21 +169,116 @@ export const QueueItemCard = memo(function QueueItemCard({
   onFavoriteToggleOptimistic,
 }: QueueItemCardProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [isRetryingAI, setIsRetryingAI] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [showExpanded, setShowExpanded] = useState(false);
+  
+  // Edit mode fields
   const [editTitle, setEditTitle] = useState(item.title || "");
   const [editTags, setEditTags] = useState((item.tags || []).join(", "));
   const [editSummary, setEditSummary] = useState(item.ai_summary || "");
+
+  // Read progress state
+  const [progress, setProgress] = useState(item.read_progress ?? 0);
+  const progressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Active reading timer state
+  const [activeTimerSeconds, setActiveTimerSeconds] = useState(0);
+  const [isTimerRunning, setIsTimerRunning] = useState(item.status === "reading");
+
+  // Reset timer state when item ID or status changes
+  useEffect(() => {
+    setActiveTimerSeconds(0);
+    setIsTimerRunning(item.status === "reading");
+  }, [item.id, item.status]);
+
+  // Sync incremental timer updates to backend every 10 seconds of active reading
+  useEffect(() => {
+    if (item.status !== "reading" || !isTimerRunning) return;
+    
+    const interval = setInterval(() => {
+      setActiveTimerSeconds((prev) => {
+        const next = prev + 1;
+        if (next % 10 === 0) {
+          const increment = 10 / 60.0;
+          updateItem(item.id, { 
+            actual_time_spent: (item.actual_time_spent || 0) + increment 
+          }).then(() => {
+            mutate(ANALYTICS_CACHE_KEY);
+          }).catch((err) => {
+            console.error("Failed to sync timer:", err);
+          });
+        }
+        return next;
+      });
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [item.status, isTimerRunning, item.id, item.actual_time_spent]);
+
+  const handleToggleTimer = async () => {
+    if (isTimerRunning) {
+      setIsTimerRunning(false);
+      const remainingMinutes = activeTimerSeconds / 60.0;
+      setActiveTimerSeconds(0);
+      try {
+        await updateItem(item.id, { 
+          actual_time_spent: (item.actual_time_spent || 0) + remainingMinutes 
+        });
+        toast.success("Timer paused. Reading progress saved.");
+        onUpdate();
+      } catch (err: any) {
+        toast.error("Failed to pause timer", { description: err.message });
+      }
+    } else {
+      setIsTimerRunning(true);
+    }
+  };
+
+  const handleCompleteTimer = async () => {
+    setIsTimerRunning(false);
+    const remainingMinutes = activeTimerSeconds / 60.0;
+    setActiveTimerSeconds(0);
+    setActionLoading("status");
+    try {
+      await updateItem(item.id, {
+        status: "completed",
+        read_progress: 100,
+        actual_time_spent: (item.actual_time_spent || 0) + remainingMinutes
+      });
+      toast.success("Marked complete! ✓");
+      onUpdate();
+      mutate(ANALYTICS_CACHE_KEY);
+    } catch (err: any) {
+      toast.error("Failed to complete item", { description: err.message });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const [logoFailed, setLogoFailed] = useState(false);
   const [thumbFailed, setThumbFailed] = useState(false);
+
+  // Fetch folders for dropdown/move selection
+  const { collections } = useCollections();
 
   useEffect(() => {
     setLogoFailed(false);
     setThumbFailed(false);
-  }, [item.id]);
+    setProgress(item.read_progress ?? 0);
+  }, [item.id, item.read_progress]);
+
+  // Sync edit fields when the backend data is updated via SWR
+  useEffect(() => {
+    setEditTitle(item.title || "");
+    setEditTags((item.tags || []).join(", "));
+    setEditSummary(item.ai_summary || "");
+  }, [item.title, item.tags, item.ai_summary]);
+
   // Audio summary playback hooks
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+
   const toggleAudio = () => {
     if (!audioRef.current && item.audio_url) {
       audioRef.current = new Audio(item.audio_url);
@@ -198,11 +295,9 @@ export const QueueItemCard = memo(function QueueItemCard({
     }
   };
 
-
-
   const statusInfo = statusConfig[item.status as keyof typeof statusConfig] ?? statusConfig.unread;
   const { Icon: StatusIcon } = statusInfo;
-  const { Icon: SourceIcon, label: sourceLabel, badgeClass } = getSourceMeta(item.content_type);
+  const { Icon: SourceIcon } = getSourceMeta(item.content_type);
   const isYouTube = item.content_type === "youtube";
 
   const handleStatusChange = async (newStatus: QueueItem["status"]) => {
@@ -211,10 +306,10 @@ export const QueueItemCard = memo(function QueueItemCard({
     } else {
       setActionLoading("status");
       try {
-        const res = await updateItem(item.id, { status: newStatus });
-        if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
-        toast.success(newStatus === "completed" ? "Marked as complete! ✓" : "Status updated");
+        await updateItem(item.id, { status: newStatus });
+        toast.success(newStatus === "completed" ? "Marked complete! ✓" : "Status updated");
         onUpdate();
+        mutate(ANALYTICS_CACHE_KEY);
       } catch (e: any) {
         toast.error("Failed to update status", { description: e.message });
       } finally {
@@ -229,8 +324,7 @@ export const QueueItemCard = memo(function QueueItemCard({
     } else {
       setActionLoading("favorite");
       try {
-        const res = await updateItem(item.id, { is_favorite: !item.is_favorite });
-        if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+        await updateItem(item.id, { is_favorite: !item.is_favorite });
         toast.success(item.is_favorite ? "Removed from favorites" : "Added to favorites ★");
         onUpdate();
       } catch (e: any) {
@@ -241,6 +335,52 @@ export const QueueItemCard = memo(function QueueItemCard({
     }
   };
 
+  const handleRetryAI = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsRetryingAI(true);
+    try {
+      await retryAI(item.id);
+      toast.success("Enqueued for AI summary generation!");
+      onUpdate();
+    } catch (err: any) {
+      toast.error("Failed to retry AI summary", { description: err.message });
+    } finally {
+      setIsRetryingAI(false);
+    }
+  };
+
+  // Progress change slider trigger
+  const handleProgressChange = (val: number) => {
+    setProgress(val);
+
+    if (progressTimeoutRef.current) clearTimeout(progressTimeoutRef.current);
+    progressTimeoutRef.current = setTimeout(async () => {
+      try {
+        await updateItem(item.id, { read_progress: val });
+        onUpdate();
+        mutate(ANALYTICS_CACHE_KEY);
+      } catch (err: any) {
+        toast.error("Failed to save progress", { description: err.message });
+      }
+    }, 500); // 500ms debounce to prevent API spamming
+  };
+
+
+
+  // Move directly to a collection
+  const handleMoveCollection = async (collectionId: string | null) => {
+    setActionLoading("move");
+    try {
+      await updateItem(item.id, { collection_id: collectionId });
+      toast.success("Folder updated");
+      onUpdate();
+    } catch (err: any) {
+      toast.error("Failed to move item", { description: err.message });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleEditSave = async () => {
     setActionLoading("edit");
     try {
@@ -248,12 +388,11 @@ export const QueueItemCard = memo(function QueueItemCard({
         .split(",")
         .map((t) => t.trim().toLowerCase())
         .filter(Boolean);
-      const res = await editItem(item.id, {
+      await editItem(item.id, {
         title: editTitle || undefined,
         tags: tagsArray,
         ai_summary: editSummary || undefined,
       });
-      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
       setIsEditing(false);
       toast.success("Item updated");
       onUpdate();
@@ -271,10 +410,10 @@ export const QueueItemCard = memo(function QueueItemCard({
     } else {
       setActionLoading("delete");
       try {
-        const res = await deleteItem(item.id);
-        if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
+        await deleteItem(item.id);
         toast.success("Item deleted");
         onUpdate();
+        mutate(ANALYTICS_CACHE_KEY);
       } catch (e: any) {
         toast.error("Failed to delete item", { description: e.message });
       } finally {
@@ -283,16 +422,36 @@ export const QueueItemCard = memo(function QueueItemCard({
     }
   };
 
+  const currentFolder = collections.find((c) => c.id === item.collection_id);
+
   return (
-    <Card className={`group glass border-border/15 transition-all duration-300 hover:border-primary/20 hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/5 overflow-hidden flex flex-col h-auto min-h-[90px] ${item.status === "completed" ? "opacity-60" : ""}`}>
+    <Card
+      draggable={true}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/plain", item.id);
+        if (item.collection_id) {
+          e.dataTransfer.setData("application/collection-id", item.collection_id);
+        }
+        e.dataTransfer.setData("application/read-time", String(item.estimated_read_time || 0));
+        e.dataTransfer.effectAllowed = "move";
+        e.currentTarget.classList.add("opacity-50");
+      }}
+      onDragEnd={(e) => {
+        e.currentTarget.classList.remove("opacity-50");
+      }}
+      className={`group glass border border-border/15 transition-all duration-300 hover:border-primary/25 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-primary/5 overflow-hidden flex flex-col h-auto min-h-[90px] ${
+        item.status === "completed" ? "opacity-65" : ""
+      }`}
+    >
       <CardContent className="p-0 flex flex-col flex-1">
-        {/* Edit mode vs view mode */}
         {isEditing ? (
           <div className="space-y-4 p-5 flex flex-col flex-1">
             <h4 className="text-sm font-semibold gradient-text">Edit Queue Item</h4>
             <div className="space-y-3 flex-1">
               <div>
-                <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold block mb-1">Title</label>
+                <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold block mb-1">
+                  Title
+                </label>
                 <Input
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
@@ -301,7 +460,9 @@ export const QueueItemCard = memo(function QueueItemCard({
                 />
               </div>
               <div>
-                <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold block mb-1">Tags (comma-separated)</label>
+                <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold block mb-1">
+                  Tags (comma-separated)
+                </label>
                 <Input
                   value={editTags}
                   onChange={(e) => setEditTags(e.target.value)}
@@ -310,13 +471,15 @@ export const QueueItemCard = memo(function QueueItemCard({
                 />
               </div>
               <div>
-                <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold block mb-1">AI Summary</label>
+                <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold block mb-1">
+                  AI Summary
+                </label>
                 <Textarea
                   value={editSummary}
                   onChange={(e) => setEditSummary(e.target.value)}
-                  placeholder="Summary (optional)"
-                  className="text-xs bg-secondary/20 border-border/10 focus-visible:ring-primary/45 resize-none"
-                  rows={4}
+                  placeholder="Summary"
+                  className="text-xs bg-secondary/20 border-border/10 focus-visible:ring-primary/45 resize-none font-sans"
+                  rows={3}
                 />
               </div>
             </div>
@@ -327,9 +490,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                 disabled={actionLoading === "edit"}
                 className="gradient-primary text-white border-0 cursor-pointer"
               >
-                {actionLoading === "edit" && (
-                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                )}
+                {actionLoading === "edit" && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
                 Save Changes
               </Button>
               <Button
@@ -343,143 +504,249 @@ export const QueueItemCard = memo(function QueueItemCard({
             </div>
           </div>
         ) : (
-          <div className="flex items-start gap-4 p-5">
-            {/* Logo container */}
-            <div className="relative flex-shrink-0 w-14 h-14 min-w-14 overflow-hidden rounded-md border border-border/10 bg-secondary/10 flex items-center justify-center">
-              {item.thumbnail_url && !thumbFailed ? (
-                <img
-                  src={item.thumbnail_url}
-                  alt={item.title || ""}
-                  className="w-full h-full object-cover"
-                  onError={() => setThumbFailed(true)}
-                />
-              ) : item.logo_url && !logoFailed ? (
-                <div className={`flex items-center justify-center w-full h-full p-2.5 bg-gradient-to-br ${getFallbackGradient(item.content_type)}`}>
+          <div className="flex flex-col flex-1">
+            <div className="flex items-start gap-4 p-5">
+              {/* Logo / Thumbnail */}
+              <div
+                onClick={() => window.open(item.url, "_blank")}
+                className="relative flex-shrink-0 w-14 h-14 min-w-14 overflow-hidden rounded-md border border-border/10 bg-secondary/10 flex items-center justify-center cursor-pointer hover:opacity-80 transition-opacity"
+                title="Open Link"
+              >
+                {item.thumbnail_url && !thumbFailed ? (
                   <img
-                    src={item.logo_url}
-                    alt={item.source_name || ""}
-                    className="w-7 h-7 object-contain bg-transparent"
-                    onError={() => setLogoFailed(true)}
+                    src={item.thumbnail_url}
+                    alt={item.title || ""}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                    onError={() => setThumbFailed(true)}
                   />
-                </div>
-              ) : (
-                /* Fallback gradient with source icon */
-                <div className={`fallback-gradient flex items-center justify-center bg-gradient-to-br ${getFallbackGradient(item.content_type)} w-full h-full`}
-                >
-                  <SourceIcon className="h-6 w-6 opacity-15 text-foreground/40" />
-                </div>
-              )}
+                ) : item.logo_url && !logoFailed ? (
+                  <div
+                    className={`flex items-center justify-center w-full h-full p-2.5 bg-gradient-to-br ${getFallbackGradient(
+                      item.content_type
+                    )}`}
+                  >
+                    <img
+                      src={item.logo_url}
+                      alt={item.source_name || ""}
+                      className="w-7 h-7 object-contain bg-transparent animate-pulse-slow"
+                      onError={() => setLogoFailed(true)}
+                    />
+                  </div>
+                ) : (
+                  <div
+                    className={`fallback-gradient flex items-center justify-center bg-gradient-to-br ${getFallbackGradient(
+                      item.content_type
+                    )} w-full h-full`}
+                  >
+                    <SourceIcon className="h-6 w-6 opacity-15 text-foreground/40" />
+                  </div>
+                )}
 
-              {/* Platform Logo Overlay Badge (shows when thumbnail is displayed) */}
-              {item.thumbnail_url && !thumbFailed && item.logo_url && !logoFailed && (
-                <div className="absolute bottom-0 right-0 w-5 h-5 bg-background/95 border-t border-l border-border/10 p-0.5 flex items-center justify-center rounded-tl-md shadow-sm">
-                  <img
-                    src={item.logo_url}
-                    alt={item.source_name || ""}
-                    className="w-3.5 h-3.5 object-contain"
-                    onError={() => setLogoFailed(true)}
-                  />
-                </div>
-              )}
-            </div>
+                {item.thumbnail_url && !thumbFailed && item.logo_url && !logoFailed && (
+                  <div className="absolute bottom-0 right-0 w-5 h-5 bg-background/95 border-t border-l border-border/10 p-0.5 flex items-center justify-center rounded-tl-md shadow-sm">
+                    <img
+                      src={item.logo_url}
+                      alt={item.source_name || ""}
+                      className="w-3.5 h-3.5 object-contain"
+                      onError={() => setLogoFailed(true)}
+                    />
+                  </div>
+                )}
+              </div>
 
-              {/* Content column */}
+              {/* Title & tags */}
               <div className="flex flex-col flex-1 min-w-0">
-                {/* Title */}
                 <h3
-                  className={`font-semibold text-base leading-snug line-clamp-2 group-hover:text-primary transition-colors duration-200 cursor-pointer ${item.status === "completed" ? "line-through opacity-70" : ""}`}
+                  className={`font-semibold text-base leading-snug line-clamp-2 group-hover:text-primary transition-colors duration-200 cursor-pointer ${
+                    item.status === "completed" ? "line-through opacity-65" : ""
+                  }`}
                   onClick={() => window.open(item.url, "_blank")}
                   title={item.title || item.url}
                 >
                   {item.title || item.url}
                 </h3>
 
-                {/* Tags */}
-                {item.tags && item.tags.length > 0 && item.tags[0] !== "uncategorized" && (
-                  <div className="flex flex-wrap gap-1 mb-1 mt-1">
-                    {item.tags.slice(0, 4).map((tag) => (
-                      <button
-                        key={tag}
-                        onClick={() => onTagClick?.(tag)}
-                        className="text-[9px] bg-primary/10 text-primary border border-primary/15 px-2 py-0.5 rounded-full uppercase tracking-wider font-bold hover:bg-primary/20 transition-all cursor-pointer"
+                <div className="flex flex-wrap gap-1.5 items-center mb-1 mt-1">
+                  {/* Folder collection badge if set */}
+                  {currentFolder && (
+                    <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 bg-amber-500/10 text-amber-500 border border-amber-500/15">
+                      <FolderOpen className="h-2.5 w-2.5" />
+                      {currentFolder.name}
+                    </span>
+                  )}
+
+                  {/* Tag chips */}
+                  {item.tags && item.tags.length > 0 && item.tags[0] !== "uncategorized" && (
+                    <>
+                      {item.tags.slice(0, 3).map((tag) => (
+                        <button
+                          key={tag}
+                          onClick={() => onTagClick?.(tag)}
+                          className="text-[9px] bg-primary/10 text-primary border border-primary/15 px-2 py-0.5 rounded-full uppercase tracking-wider font-bold hover:bg-primary/20 transition-all cursor-pointer"
+                        >
+                          #{tag}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+
+                {/* AI Summary Block */}
+                {(item.processing_status === "queued" || item.processing_status === "processing") ? (
+                  <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-purple-500/5 rounded-lg p-2 border border-purple-500/5 animate-pulse">
+                    <Loader2 className="h-4 w-4 text-purple-400 animate-spin shrink-0" />
+                    <p className="leading-relaxed font-semibold text-purple-400">
+                      {item.processing_status === "queued" ? "Queued for AI summary..." : "Generating AI summary..."}
+                    </p>
+                  </div>
+                ) : (item.processing_status === "pending_quota" || item.processing_status === "ai_pending") ? (
+                  <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-amber-500/5 rounded-lg p-2 border border-amber-500/10">
+                    <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+                    <p className="leading-relaxed font-semibold text-amber-600 dark:text-amber-400">
+                      AI summary pending (free tier limit reached). It will be generated automatically after quota reset.
+                    </p>
+                  </div>
+                ) : (item.processing_status === "failed") ? (
+                  <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center justify-between bg-red-500/5 rounded-lg p-2 border border-red-500/10">
+                    <div className="flex gap-2 items-center">
+                      <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
+                      <p className="leading-relaxed font-semibold text-red-600 dark:text-red-400">
+                        AI Summary generation failed.
+                      </p>
+                    </div>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={handleRetryAI} 
+                      className="h-7 text-[10px] uppercase font-bold border-red-500/30 text-red-500 hover:bg-red-500/10 cursor-pointer"
+                      disabled={isRetryingAI}
+                    >
+                      {isRetryingAI ? "Retrying..." : "Retry AI"}
+                    </Button>
+                  </div>
+                ) : item.ai_summary ? (
+                  <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-start bg-primary/5 rounded-lg p-2 border border-primary/5">
+                    <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5 animate-pulse-slow" />
+                    <p className="line-clamp-2 leading-relaxed">{item.ai_summary}</p>
+                    {item.audio_url && (
+                      <Button variant="ghost" size="sm" onClick={toggleAudio} className="h-6 w-6 p-0 shrink-0 cursor-pointer">
+                        {isPlaying ? (
+                          <PauseCircle className="h-4 w-4 text-primary animate-pulse" />
+                        ) : (
+                          <PlayCircle className="h-4 w-4 text-primary" />
+                        )}
+                      </Button>
+                    )}
+                  </div>
+                ) : null}
+
+                {/* Active Reading Timer Block */}
+                {item.status === "reading" && (
+                  <div className="mb-3 flex items-center justify-between bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 text-xs text-amber-500">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                      </span>
+                      <span>Reading: {formatTimeSpent((item.actual_time_spent || 0) + activeTimerSeconds / 60.0)}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleToggleTimer}
+                        className="h-7 px-2 text-[10px] font-bold uppercase tracking-wider text-amber-500 hover:bg-amber-500/10 border border-amber-500/15 cursor-pointer"
                       >
-                        #{tag}
-                      </button>
-                    ))}
+                        {isTimerRunning ? "Pause" : "Resume"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleCompleteTimer}
+                        disabled={actionLoading !== null}
+                        className="h-7 px-2 text-[10px] font-bold uppercase tracking-wider text-emerald-500 hover:bg-emerald-500/10 border border-emerald-500/15 cursor-pointer"
+                      >
+                        Done
+                      </Button>
+                    </div>
                   </div>
                 )}
 
-                {/* AI Summary */}
-
-    {item.processing_status === "processing" ? (
-      <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-purple-500/5 rounded-lg p-2 border border-purple-500/5 animate-pulse">
-        <Loader2 className="h-4 w-4 text-purple-400 animate-spin shrink-0" />
-        <p className="leading-relaxed font-medium text-purple-400">Generating AI summary...</p>
-      </div>
-    ) : item.ai_summary ? (
-      <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-start bg-primary/5 rounded-lg p-2 border border-primary/5">
-        <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5 animate-pulse-slow" />
-        <p className="line-clamp-2 leading-relaxed">{item.ai_summary}</p>
-        {item.audio_url && (
-          <Button variant="ghost" size="sm" onClick={toggleAudio} className="h-6 w-6 p-0">
-            {isPlaying ? <PauseCircle className="h-4 w-4" /> : <PlayCircle className="h-4 w-4" />}
-          </Button>
-        )}
-      </div>
-    ) : null}
-
                 {/* Metadata Row */}
                 <div className="flex items-center justify-between text-xs text-muted-foreground/80 mt-auto pt-2 border-t border-border/10">
-                  <div className="flex items-center gap-2">
-                    {item.estimated_read_time && !isYouTube && (
+                  <div className="flex items-center gap-2 font-medium">
+                    {item.estimated_read_time && !isYouTube && item.status !== "completed" && (
                       <span className="flex items-center gap-1">
                         <Clock className="h-3.5 w-3.5" />
                         {item.estimated_read_time}m read
                       </span>
                     )}
-                    {item.duration_seconds && isYouTube && (
+                    {item.duration_seconds && isYouTube && item.status !== "completed" && (
                       <span className="flex items-center gap-1">
                         <Clock className="h-3.5 w-3.5" />
                         {formatDuration(item.duration_seconds)} watch
                       </span>
                     )}
-                      {item.created_at && (
-                        <span className="text-muted-foreground/60">{timeAgo(item.created_at)}</span>
-                      )}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {item.processing_status === "processing" && (
-                      <div className="flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase bg-purple-500/10 text-purple-400 border-purple-500/20 animate-pulse">
-                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                        AI Processing
-                      </div>
+                    {item.status === "completed" && (
+                      <>
+                        <span className="flex items-center gap-1 text-emerald-400 font-semibold">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Completed {item.completed_at ? timeAgo(item.completed_at) : ""}
+                        </span>
+                        <span className="text-muted-foreground/45">·</span>
+                        <span className="flex items-center gap-1 text-muted-foreground/90">
+                          <Clock className="h-3.5 w-3.5" />
+                          Spent: {formatTimeSpent(item.actual_time_spent)}
+                        </span>
+                      </>
                     )}
-                    <div className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${statusInfo.className}`}
-                    >
-                      <StatusIcon className={`h-3 w-3 ${item.status === "reading" ? "animate-spin" : ""}`} />
+                    {item.status !== "completed" && item.created_at && (
+                      <span className="text-muted-foreground/60">{timeAgo(item.created_at)}</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 font-bold uppercase text-[9px]">
+                    {item.read_progress > 0 && item.read_progress < 100 && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                        {item.read_progress}% read
+                      </span>
+                    )}
+                    <div className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${statusInfo.className}`}>
+                      <StatusIcon className={`h-3 w-3 ${item.status === "reading" && isTimerRunning ? "animate-spin" : ""}`} />
                       {statusInfo.label}
                     </div>
                   </div>
                 </div>
 
-                {/* Actions */}
+                {/* Bottom Card Actions */}
                 <div className="flex items-center justify-between border-t border-border/10 pt-2 mt-2">
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => setShowExpanded(!showExpanded)}
-                    className="h-8 px-2 text-xs text-primary/95 hover:text-primary hover:bg-primary/5 cursor-pointer font-medium"
+                    className="h-8 px-2 text-xs text-primary/95 hover:text-primary hover:bg-primary/5 cursor-pointer font-semibold"
                   >
                     {showExpanded ? "Show less" : "Show details"}
-                    <ChevronDown className={`ml-1 h-3.5 w-3.5 transition-transform duration-350 ${showExpanded ? "rotate-180" : ""}`} />
+                    <ChevronDown
+                      className={`ml-1 h-3.5 w-3.5 transition-transform duration-300 ${
+                        showExpanded ? "rotate-180" : ""
+                      }`}
+                    />
                   </Button>
+
                   <div className="flex items-center gap-1">
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-accent/40 cursor-pointer"
-                      onClick={() => window.open(item.url, "_blank")}
-                      title="Open original"
+                      onClick={() => {
+                        window.open(item.url, "_blank");
+                        if (item.status === "unread") {
+                          handleStatusChange("reading");
+                        }
+                      }}
+                      title="Open Link"
                     >
                       <ExternalLink className="h-4 w-4" />
                     </Button>
@@ -489,24 +756,28 @@ export const QueueItemCard = memo(function QueueItemCard({
                       className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-accent/40 cursor-pointer"
                       onClick={handleFavoriteToggle}
                       disabled={actionLoading === "favorite"}
-                      title={item.is_favorite ? "Remove from favorites" : "Add to favorites"}
+                      title={item.is_favorite ? "Favorited" : "Add to Favorites"}
                     >
-                      <Heart className={`h-4 w-4 transition-colors ${item.is_favorite ? "fill-red-400 text-red-400" : ""}`} />
+                      <Heart
+                        className={`h-4 w-4 transition-colors ${
+                          item.is_favorite ? "fill-red-400 text-red-400" : ""
+                        }`}
+                      />
                     </Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger
                         className="inline-flex items-center justify-center rounded-md hover:bg-accent/40 hover:text-foreground h-8 w-8 cursor-pointer disabled:opacity-50"
                         disabled={actionLoading !== null}
                       >
-                        {actionLoading && actionLoading !== "favorite" ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                        {actionLoading && actionLoading !== "favorite" && actionLoading !== "status" ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
                         ) : (
                           <MoreVertical className="h-4 w-4" />
                         )}
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-44 glass-strong border-border/30">
+                      <DropdownMenuContent align="end" className="w-44 glass border-border/20">
                         <DropdownMenuItem
-                          className="cursor-pointer"
+                          className="cursor-pointer text-xs font-semibold"
                           onClick={() => {
                             setEditTitle(item.title || "");
                             setEditTags((item.tags || []).join(", "));
@@ -515,108 +786,199 @@ export const QueueItemCard = memo(function QueueItemCard({
                           }}
                         >
                           <Edit className="mr-2 h-4 w-4" />
-                          Edit Item
+                          Edit Info
                         </DropdownMenuItem>
-                        <DropdownMenuSeparator className="bg-border/30" />
+                        <DropdownMenuSeparator className="bg-border/10" />
+
+                        {/* Move folder inside card menu */}
+                        {collections.length > 0 && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger className="flex items-center w-full px-2 py-1.5 text-xs font-semibold hover:bg-secondary rounded cursor-pointer">
+                              <FolderOpen className="mr-2 h-4 w-4" />
+                              Move to folder...
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent className="glass border-border/20 max-h-48 overflow-y-auto">
+                              <DropdownMenuItem
+                                className="text-xs cursor-pointer"
+                                onClick={() => handleMoveCollection(null)}
+                              >
+                                Uncategorized
+                              </DropdownMenuItem>
+                              {collections.map((c) => (
+                                <DropdownMenuItem
+                                  key={c.id}
+                                  className="text-xs cursor-pointer font-medium"
+                                  onClick={() => handleMoveCollection(c.id)}
+                                >
+                                  {c.name}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+
+                        <DropdownMenuSeparator className="bg-border/10" />
                         {item.status !== "reading" && item.status !== "completed" && (
                           <DropdownMenuItem
-                            className="cursor-pointer"
+                            className="cursor-pointer text-xs font-semibold"
                             onClick={() => handleStatusChange("reading")}
                           >
                             <PlayCircle className="mr-2 h-4 w-4 text-amber-400" />
-                            Start Reading
+                            Start reading
                           </DropdownMenuItem>
                         )}
                         {item.status !== "completed" && (
                           <DropdownMenuItem
-                            className="cursor-pointer"
+                            className="cursor-pointer text-xs font-semibold"
                             onClick={() => handleStatusChange("completed")}
                           >
                             <CheckCircle2 className="mr-2 h-4 w-4 text-emerald-400" />
-                            Mark Complete
+                            Mark complete
                           </DropdownMenuItem>
                         )}
                         {item.status === "completed" && (
                           <DropdownMenuItem
-                            className="cursor-pointer"
+                            className="cursor-pointer text-xs font-semibold"
                             onClick={() => handleStatusChange("unread")}
                           >
                             <CircleDot className="mr-2 h-4 w-4 text-blue-400" />
                             Re-queue
                           </DropdownMenuItem>
                         )}
-                        <DropdownMenuSeparator className="bg-border/30" />
+                        <DropdownMenuSeparator className="bg-border/10" />
                         <DropdownMenuItem
-                          className="cursor-pointer text-destructive focus:text-destructive"
+                          className="cursor-pointer text-xs font-semibold text-destructive focus:text-destructive"
                           onClick={handleDelete}
                         >
                           <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
+                          Delete Item
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
                 </div>
-
-                {/* Collapsible details section */}
-                {showExpanded && (
-                  <div className="mt-4 pt-4 border-t border-border/10 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
-                    {item.processing_status === "processing" ? (
-                      <div className="flex flex-col items-center justify-center py-6 gap-2 bg-secondary/5 rounded-lg border border-border/5">
-                        <Loader2 className="h-6 w-6 text-purple-400 animate-spin" />
-                        <span className="text-xs text-muted-foreground">Extracting & summarizing content...</span>
-                      </div>
-                    ) : (
-                      <>
-                        {/* Full AI Summary */}
-                        {item.ai_summary && (
-                          <div className="space-y-1">
-                            <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
-                              <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
-                            </h4>
-                            <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-line bg-secondary/10 rounded p-2.5 border border-border/5">
-                              {item.ai_summary}
-                            </p>
-                          </div>
-                        )}
-                        {/* Extracted Text Preview */}
-                        {item.extracted_text && (
-                          <div className="space-y-1">
-                            <h4 className="text-[10px] font-bold text-muted-foreground/80 uppercase tracking-wider flex items-center gap-1">
-                              <BookOpen className="h-3.5 w-3.5" /> Extracted Text Preview
-                            </h4>
-                            <div className="relative max-h-36 overflow-y-auto rounded bg-secondary/20 border border-border/10 p-2.5 text-[11px] text-muted-foreground font-mono leading-relaxed whitespace-pre-line">
-                              {item.extracted_text.slice(0, 1000)}
-                              {item.extracted_text.length > 1000 ? "..." : ""}
-                            </div>
-                          </div>
-                        )}
-                        {/* Source Metadata grid */}
-                        <div className="grid grid-cols-2 gap-3 text-[11px] bg-secondary/15 rounded p-2.5 border border-border/5">
-                          <div>
-                            <span className="block text-muted-foreground/50 font-medium mb-0.5">Author</span>
-                            <span className="text-foreground truncate block font-semibold">
-                              {item.author || "Unknown"}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="block text-muted-foreground/50 font-medium mb-0.5">Source Link</span>
-                            <a
-                              href={item.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-primary hover:underline font-semibold flex items-center gap-0.5 truncate"
-                            >
-                              Visit Link <ExternalLink className="h-3 w-3 shrink-0" />
-                            </a>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
               </div>
             </div>
+
+            {/* Collapsible Details & Notes Panel */}
+            {showExpanded && (
+              <div className="p-5 border-t border-border/10 space-y-4 bg-secondary/5 animate-in fade-in slide-in-from-top-1 duration-200">
+                {/* 1. Read Progress control slider */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    <span>Read Progress</span>
+                    <span className="text-primary">{progress}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={progress}
+                    onChange={(e) => handleProgressChange(parseInt(e.target.value))}
+                    className="w-full h-1.5 bg-secondary rounded-lg appearance-none cursor-pointer accent-primary"
+                  />
+                  <p className="text-[10px] text-muted-foreground leading-relaxed">
+                    Setting progress to 100% completes this item automatically. Setting progress between 5% and 95% queues it as "Reading".
+                  </p>
+                </div>
+
+
+
+                {/* 3. Folder collection dropdown */}
+                {collections.length > 0 && (
+                  <div className="space-y-1">
+                    <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                      Assign Folder / Collection
+                    </span>
+                    <select
+                      value={item.collection_id || ""}
+                      onChange={(e) => handleMoveCollection(e.target.value || null)}
+                      className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border bg-secondary/15 text-muted-foreground border-border/10 cursor-pointer outline-none w-full"
+                    >
+                      <option value="">Uncategorized / No folder</option>
+                      {collections.map((col) => (
+                        <option key={col.id} value={col.id}>
+                          {col.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* 4. Full AI summary & details preview */}
+                {(item.processing_status === "queued" || item.processing_status === "processing") ? (
+                  <div className="space-y-1 animate-pulse">
+                    <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                      <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
+                    </h4>
+                    <p className="text-xs text-purple-400 font-semibold leading-relaxed bg-purple-500/5 rounded p-2.5 border border-purple-500/5">
+                      {item.processing_status === "queued" ? "Queued for AI summary..." : "Generating AI summary..."}
+                    </p>
+                  </div>
+                ) : (item.processing_status === "pending_quota" || item.processing_status === "ai_pending") ? (
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                      <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
+                    </h4>
+                    <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold leading-relaxed bg-amber-500/5 rounded p-2.5 border border-amber-500/10">
+                      AI summary generation pending (daily quota exceeded). It will be retried automatically when the quota resets.
+                    </p>
+                  </div>
+                ) : (item.processing_status === "failed") ? (
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                      <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
+                    </h4>
+                    <p className="text-xs text-red-600 dark:text-red-400 font-semibold leading-relaxed bg-red-500/5 rounded p-2.5 border border-red-500/10">
+                      AI summary generation failed. You can retry manually.
+                    </p>
+                  </div>
+                ) : (item.full_summary || item.ai_summary) ? (
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                      <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
+                    </h4>
+                    <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-line bg-secondary/10 rounded p-2.5 border border-border/5">
+                      {item.full_summary || item.ai_summary}
+                    </p>
+                  </div>
+                ) : null}
+
+                {item.extracted_text && (
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-muted-foreground/85 uppercase tracking-wider flex items-center gap-1">
+                      <BookOpen className="h-3.5 w-3.5" /> Extracted Text Preview
+                    </h4>
+                    <div className="relative max-h-36 overflow-y-auto rounded bg-secondary/20 border border-border/10 p-2.5 text-[11px] text-muted-foreground font-mono leading-relaxed whitespace-pre-line">
+                      {item.extracted_text.slice(0, 1000)}
+                      {item.extracted_text.length > 1000 ? "..." : ""}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3 text-[11px] bg-secondary/20 rounded p-2.5 border border-border/5">
+                  <div>
+                    <span className="block text-muted-foreground/50 font-medium mb-0.5">Author</span>
+                    <span className="text-foreground truncate block font-semibold">
+                      {item.author || "Unknown"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-muted-foreground/50 font-medium mb-0.5">Source Link</span>
+                    <a
+                      href={item.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline font-semibold flex items-center gap-0.5 truncate"
+                    >
+                      Visit Link <ExternalLink className="h-3 w-3 shrink-0" />
+                    </a>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>

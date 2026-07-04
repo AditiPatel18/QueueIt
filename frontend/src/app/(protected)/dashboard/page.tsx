@@ -26,6 +26,8 @@ import {
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { AddItemDialog } from "@/components/add-item-dialog";
 import { QueueList } from "@/components/queue-list";
+import { CollectionsSidebar } from "@/components/collections-sidebar";
+
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -33,6 +35,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
+
+  // Folders filtering state
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
 
   useEffect(() => {
     const getUser = async () => {
@@ -99,6 +104,17 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            <Link href="/chat">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground cursor-pointer flex items-center gap-1"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                AI Chat
+              </Button>
+            </Link>
+
             <Link href="/history">
               <Button
                 variant="ghost"
@@ -109,12 +125,22 @@ export default function DashboardPage() {
               </Button>
             </Link>
 
+            <Link href="/analytics">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground cursor-pointer"
+              >
+                Analytics
+              </Button>
+            </Link>
+
             <AddItemDialog
               trigger={
                 <Button
                   id="add-content-btn"
                   size="sm"
-                  className="gradient-primary text-white border-0 hover:opacity-90 transition-opacity cursor-pointer"
+                  className="gradient-primary text-white border-0 hover:opacity-90 transition-opacity cursor-pointer glow-primary"
                 >
                   <Plus className="mr-1 h-4 w-4" />
                   Add Content
@@ -129,16 +155,16 @@ export default function DashboardPage() {
                   className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 cursor-pointer transition-colors"
                   id="user-menu-btn"
                 >
-                    <Avatar className="h-8 w-8">
-                      <AvatarImage
-                        src={user.user_metadata?.avatar_url}
-                        alt={getDisplayName(user)}
-                      />
-                      <AvatarFallback className="bg-primary/20 text-primary text-xs font-semibold">
-                        {getInitials(user)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <ChevronDownIcon className="h-3 w-3 text-muted-foreground" />
+                  <Avatar className="h-8 w-8">
+                    <AvatarImage
+                      src={user.user_metadata?.avatar_url}
+                      alt={getDisplayName(user)}
+                    />
+                    <AvatarFallback className="bg-primary/20 text-primary text-xs font-semibold">
+                      {getInitials(user)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <ChevronDownIcon className="h-3 w-3 text-muted-foreground" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56 glass-strong border-border/30">
                   <div className="px-3 py-2">
@@ -146,10 +172,12 @@ export default function DashboardPage() {
                     <p className="text-xs text-muted-foreground">{user.email}</p>
                   </div>
                   <DropdownMenuSeparator className="bg-border/30" />
-                  <DropdownMenuItem className="cursor-pointer">
-                    <User className="mr-2 h-4 w-4" />
-                    Profile
-                  </DropdownMenuItem>
+                  <Link href="/profile">
+                    <DropdownMenuItem className="cursor-pointer">
+                      <User className="mr-2 h-4 w-4" />
+                      Profile
+                    </DropdownMenuItem>
+                  </Link>
                   <DropdownMenuSeparator className="bg-border/30" />
                   <DropdownMenuItem
                     className="cursor-pointer text-destructive focus:text-destructive"
@@ -171,28 +199,42 @@ export default function DashboardPage() {
       </nav>
 
       {/* Main content */}
-      <main className="relative z-10 mx-auto max-w-7xl px-6 py-12">
+      <main className="relative z-10 mx-auto max-w-7xl px-6 py-12 space-y-10">
         {/* Welcome section */}
-        <div className="mb-10">
+        <div>
           <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
             Welcome back,{" "}
-            <span className="gradient-text">
-              {user ? getDisplayName(user) : ""}
-            </span>
+            <span className="gradient-text">{user ? getDisplayName(user) : ""}</span>
           </h1>
           <p className="mt-2 text-muted-foreground text-lg">
             Your content queue is ready. What will you save today?
           </p>
         </div>
 
-        {/* Queue list (handles empty state internally) */}
-        <QueueList
-          refreshSignal={refreshSignal}
-          onRefresh={() => {}}
-        />
+
+
+        {/* Collections side-by-side layout */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 items-start">
+          {/* Folders navigation panel */}
+          <div className="md:col-span-1 md:sticky md:top-24 max-h-[calc(100vh-120px)] overflow-y-auto border-r border-border/10 pr-6 scrollbar-none">
+            <CollectionsSidebar
+              selectedCollectionId={selectedCollectionId}
+              onSelectCollection={setSelectedCollectionId}
+            />
+          </div>
+
+          {/* Items queue */}
+          <div className="md:col-span-3">
+            <QueueList
+              selectedCollectionId={selectedCollectionId}
+              refreshSignal={refreshSignal}
+              onRefresh={() => {}}
+            />
+          </div>
+        </div>
 
         {/* Quick tips — shown below queue */}
-        <div className="mt-10 grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-3 pt-6 border-t border-border/10">
           {[
             {
               icon: Sparkles,
@@ -201,8 +243,8 @@ export default function DashboardPage() {
             },
             {
               icon: LayersIcon,
-              title: "Organize with queues",
-              description: "Create custom queues to categorize your saved content.",
+              title: "Organize with folders",
+              description: "Create custom folders/collections to categorize and structure your queues.",
             },
             {
               icon: Inbox,

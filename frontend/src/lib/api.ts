@@ -2,7 +2,7 @@
 // All functions use canonical field names matching the database schema.
 
 import { createClient } from "./supabase/client";
-import type { ItemFilters, QueueItem } from "@/types";
+import type { ItemFilters, QueueItem, ReadingAnalyticsData } from "@/types";
 
 // Normalise base URL – strip trailing slash to avoid "//api" problems
 const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "")}/api`;
@@ -89,6 +89,7 @@ export async function getItems(filters?: ItemFilters) {
   if (filters?.status && filters.status !== "all") params.append("status", filters.status);
   if (filters?.type && filters.type !== "all") params.append("type", filters.type);
   if (filters?.tag) params.append("tag", filters.tag);
+  if (filters?.collection_id) params.append("collection_id", filters.collection_id);
   if (filters?.search) params.append("search", filters.search);
   if (filters?.sort) params.append("sort", filters.sort);
   if (filters?.limit) params.append("limit", filters.limit.toString());
@@ -111,10 +112,10 @@ export async function getItem(id: string) {
   return apiClient(`/items/${id}`);
 }
 
-/** Full edit: title, tags, summary, description */
+/** Full edit: title, tags, summary, description, collection_id, read_progress, actual_time_spent */
 export async function editItem(
   id: string,
-  data: Partial<Pick<QueueItem, "title" | "tags" | "ai_summary" | "description">>
+  data: Partial<Pick<QueueItem, "title" | "tags" | "ai_summary" | "description" | "collection_id" | "read_progress" | "actual_time_spent">>
 ) {
   return apiClient(`/items/${id}`, {
     method: "PUT",
@@ -122,15 +123,31 @@ export async function editItem(
   });
 }
 
-/** Quick update: status toggle, is_favorite toggle */
+/** Quick update: status toggle, is_favorite toggle, progress, collection, actual_time_spent */
 export async function updateItem(
   id: string,
-  data: { status?: QueueItem["status"]; is_favorite?: boolean }
+  data: {
+    status?: QueueItem["status"];
+    is_favorite?: boolean;
+    read_progress?: number;
+    collection_id?: string | null;
+    actual_time_spent?: number;
+  }
 ) {
   return apiClient(`/items/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
   });
+}
+
+/** Get history statistics for completed items */
+export async function getHistoryStats(): Promise<{
+  items_completed: number;
+  total_time_consumed: number;
+  top_categories: { category: string; count: number }[];
+  completion_streak: number;
+}> {
+  return apiClient("/items/history/stats");
 }
 
 /** Delete an item */
@@ -162,3 +179,200 @@ export async function getStreakData() {
 export async function backfillSummaries() {
   return apiClient("/items/backfill-summaries", { method: "POST" });
 }
+
+/** Retry AI summary generation for a failed or pending item */
+export async function retryAI(id: string) {
+  return apiClient(`/items/${id}/retry`, { method: "POST" });
+}
+
+// ---------------------------------------------------------------------------
+// Collections API
+// ---------------------------------------------------------------------------
+
+import type { Collection } from "@/types";
+
+/** Get all collections */
+export async function getCollections(): Promise<Collection[]> {
+  return apiClient("/collections");
+}
+
+/** Create a new collection */
+export async function createCollection(name: string, color?: string): Promise<Collection> {
+  return apiClient("/collections", {
+    method: "POST",
+    body: JSON.stringify({ name, color }),
+  });
+}
+
+/** Update a collection name or color */
+export async function updateCollection(id: string, name?: string, color?: string): Promise<Collection> {
+  return apiClient(`/collections/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({ name, color }),
+  });
+}
+
+/** Delete a collection */
+export async function deleteCollection(id: string) {
+  return apiClient(`/collections/${id}`, { method: "DELETE" });
+}
+
+/** Trigger AI auto-reclassification of uncategorized items */
+export async function reclassifyItems() {
+  return apiClient("/items/reclassify", { method: "POST" });
+}
+
+// ---------------------------------------------------------------------------
+// Bulk Actions API
+// ---------------------------------------------------------------------------
+
+/** Perform bulk operations on multiple queue items */
+export async function bulkItemsAction(data: {
+  ids: string[];
+  action: "delete" | "move" | "status" | "favorite";
+  status?: QueueItem["status"];
+  collection_id?: string | null;
+  is_favorite?: boolean;
+}) {
+  return apiClient("/items/bulk", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Chat API
+// ---------------------------------------------------------------------------
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatResponse {
+  response: string;
+  sources: QueueItem[];
+}
+
+/**
+ * Stream a chat message via SSE.
+ * Calls onToken for each text chunk, onDone({ response, sources }) when complete.
+ * Returns a cleanup function that aborts the fetch.
+ */
+export function sendChatMessageStream(
+  message: string,
+  history: ChatMessage[],
+  onToken: (text: string) => void,
+  onDone: (result: ChatResponse) => void,
+  onError: (err: Error) => void
+): () => void {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const supabase = createClient();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        onError(new Error("Unauthorized — no session"));
+        return;
+      }
+
+      const response = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ message, history }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let errMsg = "Chat API error";
+        try {
+          const errData = await response.json();
+          errMsg = errData.detail || errData.message || errMsg;
+        } catch {}
+        onError(new Error(errMsg));
+        return;
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        onError(new Error("No response body"));
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let accumulatedText = "";
+      let sources: QueueItem[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+
+          try {
+            const event = JSON.parse(raw);
+            if (event.type === "token") {
+              accumulatedText += event.text;
+              onToken(event.text);
+            } else if (event.type === "sources") {
+              sources = event.data ?? [];
+            } else if (event.type === "done") {
+              onDone({ response: accumulatedText, sources });
+              return;
+            } else if (event.type === "error") {
+              onError(new Error(event.text || "Stream error"));
+              return;
+            }
+          } catch {
+            // Malformed SSE line — skip
+          }
+        }
+      }
+
+      // Stream ended without "done" event — still resolve
+      onDone({ response: accumulatedText, sources });
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  })();
+
+  return () => controller.abort();
+}
+
+/** Non-streaming fallback (kept for compatibility) */
+export async function sendChatMessage(message: string, history: ChatMessage[]): Promise<ChatResponse> {
+  return new Promise((resolve, reject) => {
+    let response = "";
+    let sources: QueueItem[] = [];
+    sendChatMessageStream(
+      message,
+      history,
+      (token) => { response += token; },
+      (result) => resolve(result),
+      (err) => reject(err)
+    );
+  });
+}
+
+/** Get full reading analytics */
+export async function getReadingAnalytics(): Promise<ReadingAnalyticsData> {
+  return apiClient("/items/analytics/reading");
+}
+

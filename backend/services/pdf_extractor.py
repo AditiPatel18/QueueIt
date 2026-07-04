@@ -64,7 +64,7 @@ def extract_pdf(url: str) -> dict:
                 author = reader.metadata.author
             
             word_count = len(full_text.split()) if full_text else 0
-            estimated_read_time = max(1, round(word_count / 200)) if word_count else None
+            estimated_read_time = num_pages * 2
 
             base_result.update({
                 "title": title or title_fallback,
@@ -72,6 +72,7 @@ def extract_pdf(url: str) -> dict:
                 "full_text": full_text or "No readable text in PDF",
                 "author": author or "Unknown Author",
                 "word_count": word_count,
+                "page_count": num_pages,
                 "estimated_read_time": estimated_read_time,
             })
             logger.info("Successfully extracted PDF document text: %s", title or title_fallback)

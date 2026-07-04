@@ -19,12 +19,28 @@ export interface QueueItem {
   author: string | null;
   tags: string[];
   ai_summary: string | null;
+  full_summary?: string | null;
   priority_score: number;
   status: "unread" | "reading" | "completed" | "archived";
-  processing_status: "processing" | "completed" | "failed";
+  processing_status: "queued" | "processing" | "completed" | "failed" | "pending_quota" | "ai_pending";
   is_favorite: boolean;
   created_at: string;
+  completed_at?: string | null;
   audio_url?: string | null;
+  collection_id?: string | null;
+  read_progress: number;
+  actual_time_spent?: number | null;
+  estimated_time_minutes?: number | null;
+}
+
+export interface Collection {
+  id: string;
+  user_id: string;
+  name: string;
+  color: string;
+  created_at: string;
+  item_count?: number;
+  read_time_minutes?: number;
 }
 
 export interface ItemsResponse {
@@ -46,8 +62,55 @@ export interface ItemFilters {
   status?: string;
   type?: string;
   tag?: string;
+  collection_id?: string;
   search?: string;
   sort?: SortOption;
   limit?: number;
   offset?: number;
+}
+
+export interface ReadingAnalyticsData {
+  reading_time: {
+    daily: number;
+    weekly: number;
+    monthly: number;
+    daily_goal: number;
+  };
+  average_completion_time: number;
+  category_distribution: {
+    category: string;
+    count: number;
+    time_spent: number;
+  }[];
+  most_viewed_categories: {
+    category: string;
+    views: number;
+  }[];
+  streak: {
+    current: number;
+    longest: number;
+    completed_dates: string[];
+  };
+  productivity_score: number;
+  top_ai_topics: {
+    topic: string;
+    count: number;
+  }[];
+  charts: {
+    daily: {
+      date: string;
+      minutes: number;
+      completions: number;
+    }[];
+    weekly: {
+      week_start: string;
+      minutes: number;
+      completions: number;
+    }[];
+    monthly: {
+      month: string;
+      minutes: number;
+      completions: number;
+    }[];
+  };
 }

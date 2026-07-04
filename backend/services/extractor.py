@@ -6,6 +6,7 @@ Falls back to generic extraction if a specific extractor fails.
 
 import asyncio
 import logging
+import math
 from urllib.parse import urlparse
 
 from services.article_extractor import extract_article
@@ -278,6 +279,39 @@ async def extract_content(url: str) -> dict:
         "article": lambda: asyncio.to_thread(extract_article, url),
     }
 
+    def post_process(res: dict) -> dict:
+        branding = resolve_platform_info(url)
+        res.setdefault("source_type", branding["source_type"])
+        res.setdefault("source_name", branding["source_name"])
+        res.setdefault("source_domain", branding["source_domain"])
+        res.setdefault("logo_url", branding["logo_url"])
+        
+        st = res.get("source_type", "generic")
+        if st == "youtube":
+            dur = res.get("duration_seconds") or 0
+            res["estimated_read_time"] = max(1, math.ceil(dur / 60.0))
+        elif st == "pdf":
+            pages = res.get("page_count")
+            if pages is None:
+                desc = res.get("description") or ""
+                if "PDF Document with " in desc:
+                    try:
+                        pages = int(desc.split("PDF Document with ")[1].split(" pages")[0])
+                    except Exception:
+                        pages = 1
+                else:
+                    pages = 1
+            res["estimated_read_time"] = pages * 2
+        else:
+            word_count = res.get("word_count")
+            if word_count is None and res.get("full_text"):
+                word_count = len(res["full_text"].split())
+            if word_count:
+                res["estimated_read_time"] = max(1, math.ceil(word_count / 200.0))
+            else:
+                res["estimated_read_time"] = 1
+        return res
+
     try:
         extractor = extractor_map.get(source_type)
         if extractor:
@@ -285,12 +319,7 @@ async def extract_content(url: str) -> dict:
         else:
             result = await asyncio.to_thread(extract_generic, url, source_type)
 
-        # Ensure branding information is attached
-        branding = resolve_platform_info(url)
-        result.setdefault("source_type", branding["source_type"])
-        result.setdefault("source_name", branding["source_name"])
-        result.setdefault("source_domain", branding["source_domain"])
-        result.setdefault("logo_url", branding["logo_url"])
+        result = post_process(result)
 
         logger.info(
             "Extraction succeeded for %s — title=%s",
@@ -300,22 +329,39 @@ async def extract_content(url: str) -> dict:
         return result
 
     except Exception as e:
+        if source_type == "youtube":
+            logger.error("YouTube specific extractor failed for %s, generic scraper fallback bypassed to avoid HTML/footer: %s", url, e)
+            branding = resolve_platform_info(url)
+            fallback_res = {
+                "title": url,
+                "description": None,
+                "full_text": "No metadata or transcript available for this video.",
+                "thumbnail_url": None,
+                "author": "Unknown Channel",
+                "source_type": "youtube",
+                "source_name": "YouTube",
+                "source_domain": branding["source_domain"],
+                "logo_url": branding["logo_url"],
+                "video_url": url,
+                "duration_seconds": 0,
+                "word_count": None,
+                "estimated_read_time": 1,
+                "published_date": None,
+            }
+            return post_process(fallback_res)
+
         logger.warning(
             "Specific extractor failed for %s (%s), falling back to generic: %s",
             url, source_type, e,
         )
         try:
             result = await asyncio.to_thread(extract_generic, url, source_type)
-            branding = resolve_platform_info(url)
-            result.setdefault("source_type", branding["source_type"])
-            result.setdefault("source_name", branding["source_name"])
-            result.setdefault("source_domain", branding["source_domain"])
-            result.setdefault("logo_url", branding["logo_url"])
+            result = post_process(result)
             return result
         except Exception as fallback_err:
             logger.error("Generic extractor also failed for %s: %s", url, fallback_err)
             branding = resolve_platform_info(url)
-            return {
+            fallback_res = {
                 "title": url,
                 "description": None,
                 "full_text": None,
@@ -331,3 +377,4 @@ async def extract_content(url: str) -> dict:
                 "estimated_read_time": None,
                 "published_date": None,
             }
+            return post_process(fallback_res)

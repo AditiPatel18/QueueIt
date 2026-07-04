@@ -18,80 +18,64 @@ import {
   Flame,
   Zap,
   Award,
+  CheckCircle,
+  FolderOpen,
+  Trash2,
+  Heart,
+  CheckCircle2,
+  Archive,
+  CircleDot,
+  Check,
+  FolderSync,
 } from "lucide-react";
 import { toast } from "sonner";
-import { getItems, recalculatePriorities, getStreakData, getItem } from "@/lib/api";
-import { createClient } from "@/lib/supabase/client";
+import { useItems, useCollections, useAnalytics, useRecommendation, ITEMS_CACHE_KEY, ANALYTICS_CACHE_KEY, RECOMMENDATION_CACHE_KEY } from "@/hooks/use-swr-queries";
+import { mutate } from "swr";
+import { recalculatePriorities, bulkItemsAction } from "@/lib/api";
 import type { QueueItem, StatusFilter, TypeFilter, SortOption } from "@/types";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
-function mapDbItemToQueueItem(dbItem: any): QueueItem {
-  let tags: string[] = [];
-  if (dbItem.tags) {
-    if (Array.isArray(dbItem.tags)) {
-      tags = dbItem.tags;
-    } else if (typeof dbItem.tags === 'string') {
-      tags = dbItem.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+function getHistoryGroup(completedAtStr: string | null | undefined): string {
+  if (!completedAtStr) return "Older";
+  try {
+    const completedDate = new Date(completedAtStr);
+    const now = new Date();
+    
+    // Clear times for day-level comparison
+    const completedDay = new Date(completedDate.getFullYear(), completedDate.getMonth(), completedDate.getDate());
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    const diffTime = today.getTime() - completedDay.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) {
+      return "Completed Today";
+    } else if (diffDays === 1) {
+      return "Yesterday";
+    } else if (diffDays < 7) {
+      return "Last Week";
+    } else {
+      return "Older";
     }
+  } catch {
+    return "Older";
   }
-
-  return {
-    id: dbItem.id,
-    user_id: dbItem.user_id,
-    url: dbItem.url,
-    title: dbItem.title,
-    description: dbItem.description,
-    content_type: dbItem.content_type || "generic",
-    source_name: dbItem.source_name,
-    thumbnail_url: dbItem.thumbnail_url,
-    estimated_read_time: dbItem.estimated_read_time,
-    duration_seconds: dbItem.duration_seconds,
-    extracted_text: dbItem.extracted_text,
-    author: dbItem.author,
-    tags,
-    ai_summary: dbItem.ai_summary,
-    priority_score: dbItem.priority_score ?? 50.0,
-    status: dbItem.status || "unread",
-    processing_status: dbItem.processing_status || "completed",
-    is_favorite: !!dbItem.is_favorite,
-    created_at: dbItem.created_at || dbItem.added_at,
-    audio_url: dbItem.audio_url,
-  };
 }
 
-function sortItems(itemsList: QueueItem[], sortOption: SortOption): QueueItem[] {
-  return [...itemsList].sort((a, b) => {
-    if (sortOption === "priority") {
-      return (b.priority_score ?? 0) - (a.priority_score ?? 0);
-    }
-    if (sortOption === "shortest") {
-      return (a.estimated_read_time ?? 0) - (b.estimated_read_time ?? 0);
-    }
-    if (sortOption === "longest") {
-      return (b.estimated_read_time ?? 0) - (a.estimated_read_time ?? 0);
-    }
-    const dateA = new Date(a.created_at || a.added_at || 0).getTime();
-    const dateB = new Date(b.created_at || b.added_at || 0).getTime();
-    return dateB - dateA;
-  });
-}
-
-function matchesFilters(
-  item: QueueItem,
-  statusFilter: StatusFilter,
-  typeFilter: TypeFilter,
-  activeTag: string | null,
-  search: string
-): boolean {
-  if (statusFilter !== "all" && item.status !== statusFilter) return false;
-  if (typeFilter !== "all" && item.content_type !== typeFilter) return false;
-  if (activeTag && !item.tags.includes(activeTag)) return false;
-  if (search) {
-    const s = search.toLowerCase();
-    const titleMatch = item.title?.toLowerCase().includes(s);
-    const descMatch = item.description?.toLowerCase().includes(s);
-    if (!titleMatch && !descMatch) return false;
+function formatTotalTime(totalMin: number): string {
+  const h = Math.floor(totalMin / 60);
+  const m = Math.round(totalMin % 60);
+  if (h > 0) {
+    return `${h}h ${m}m`;
   }
-  return true;
+  return `${m}m`;
 }
 
 
@@ -99,6 +83,8 @@ interface QueueListProps {
   refreshSignal?: number;
   onRefresh?: () => void;
   initialStatusFilter?: StatusFilter;
+  selectedCollectionId?: string | null;
+  isHistoryView?: boolean;
 }
 
 const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
@@ -124,206 +110,101 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: "longest", label: "Longest" },
 ];
 
-export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: QueueListProps) {
-  const [items, setItems] = useState<QueueItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [recalculating, setRecalculating] = useState(false);
-  const [streak, setStreak] = useState<any>(null);
-
-  // Filters
+export function QueueList({
+  refreshSignal,
+  onRefresh,
+  initialStatusFilter,
+  selectedCollectionId = null,
+  isHistoryView = false,
+}: QueueListProps) {
+  // Filters & Sorting state
   const [search, setSearch] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialStatusFilter || "all");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [sort, setSort] = useState<SortOption>("newest");
 
+  // Selection states
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Virtualization / Pagination state
   const [visibleCount, setVisibleCount] = useState(15);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const hasFilters = search || activeTag || statusFilter !== "all" || typeFilter !== "all" || sort !== "newest";
+  const [recalculating, setRecalculating] = useState(false);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  // Load from localStorage instantly on mount to avoid layout shift
-  useEffect(() => {
-    const cached = localStorage.getItem("queueit_items_cache");
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed)) {
-          setItems(parsed);
-          setTotal(parsed.length);
-          setLoading(false);
-        }
-      } catch (e) {
-        console.error("Failed to parse cached items", e);
-      }
-    }
-  }, []);
+  // Folders list for bulk move dropdown
+  const { collections } = useCollections();
 
-  const fetchItems = useCallback(
-    async (opts: { showRefreshing?: boolean } = {}) => {
-      if (opts.showRefreshing) setRefreshing(true);
+  // Analytics & Recommendation queries
+  const { analytics } = useAnalytics();
+  const { recommendation, isLoading: recommendationLoading } = useRecommendation();
 
-      try {
-        getStreakData()
-          .then((data) => setStreak(data))
-          .catch((err) => console.error("Failed to load streak:", err));
+  const hasFilters =
+    debouncedSearch ||
+    activeTag ||
+    statusFilter !== "all" ||
+    typeFilter !== "all" ||
+    sort !== "newest" ||
+    selectedCollectionId !== null;
 
-        const res = await getItems({
-          status: statusFilter !== "all" ? statusFilter : undefined,
-          type: typeFilter !== "all" ? typeFilter : undefined,
-          tag: activeTag || undefined,
-          search: search || undefined,
-          sort,
-          limit: 100, // Load a larger batch so we don't have to refetch
-        });
-
-        if (!res) throw new Error("Failed to fetch items");
-
-        let fetchedItems: QueueItem[] = [];
-        let fetchedTotal = 0;
-
-        if (res && typeof res === "object" && "items" in res) {
-          fetchedItems = res.items as QueueItem[];
-          fetchedTotal = res.total as number;
-        } else if (Array.isArray(res)) {
-          fetchedItems = res as QueueItem[];
-          fetchedTotal = res.length;
-        }
-
-        setItems(fetchedItems);
-        setTotal(fetchedTotal);
-
-        // Cache queue
-        localStorage.setItem("queueit_items_cache", JSON.stringify(fetchedItems));
-      } catch (err: any) {
-        console.error("[QueueList] fetch error:", err);
-        const message = typeof err === "string" ? err : err instanceof Error ? err.message : JSON.stringify(err, null, 2);
-        toast.error("Failed to load queue", { description: message });
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    },
-    [search, activeTag, statusFilter, typeFilter, sort, refreshSignal]
-  );
-
-  // Debounced search
+  // Debounce search input
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      setLoading(true);
-      fetchItems();
-    }, 300);
+      setDebouncedSearch(search);
+    }, 200);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [fetchItems]);
+  }, [search]);
 
-  // Refresh on window focus or visibility change
+  // SWR queries
+  const filters = {
+    status: isHistoryView ? "completed" : (statusFilter !== "all" ? statusFilter : undefined),
+    type: typeFilter !== "all" ? typeFilter : undefined,
+    tag: activeTag || undefined,
+    collection_id: selectedCollectionId || undefined,
+    search: debouncedSearch || undefined,
+    sort,
+    limit: 100, // Load a large batch for smooth client virtualization
+  };
+
+  const { items, total, isLoading, mutateItems } = useItems(filters);
+
+  // Trigger refresh when refreshSignal changes
   useEffect(() => {
-    const handleFocusOrVisible = () => {
-      if (document.visibilityState === "visible") {
-        fetchItems();
-      }
-    };
-    window.addEventListener("focus", handleFocusOrVisible);
-    document.addEventListener("visibilitychange", handleFocusOrVisible);
-    return () => {
-      window.removeEventListener("focus", handleFocusOrVisible);
-      document.removeEventListener("visibilitychange", handleFocusOrVisible);
-    };
-  }, [fetchItems]);
+    if (refreshSignal !== undefined && refreshSignal > 0) {
+      mutateItems();
+      mutate("api/collections");
+      mutate(ANALYTICS_CACHE_KEY);
+      mutate(RECOMMENDATION_CACHE_KEY);
+    }
+  }, [refreshSignal, mutateItems]);
 
-  // Realtime subscription for items table - incremental state updates
+  // Automatically refresh collections counts/streak when a processing item finishes
+  const processingCount = items.filter(item => item.processing_status === "processing").length;
+  const prevProcessingCountRef = useRef(processingCount);
+
   useEffect(() => {
-    const supabase = createClient();
-    const channel = supabase
-      .channel("items-realtime-changes")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "items",
-        },
-        (payload) => {
-          console.log("[Realtime] received event:", payload.eventType, payload);
-          if (payload.eventType === "INSERT") {
-            const newItem = mapDbItemToQueueItem(payload.new);
-            if (!matchesFilters(newItem, statusFilter, typeFilter, activeTag, search)) return;
-            setItems((prev) => {
-              if (prev.some((item) => item.id === newItem.id)) return prev;
-              const next = [newItem, ...prev];
-              const sorted = sortItems(next, sort);
-              localStorage.setItem("queueit_items_cache", JSON.stringify(sorted));
-              return sorted;
-            });
-            setTotal((prev) => prev + 1);
-          } else if (payload.eventType === "UPDATE") {
-            const updatedItem = mapDbItemToQueueItem(payload.new);
-            setItems((prev) => {
-              let next = prev.map((item) => (item.id === updatedItem.id ? updatedItem : item));
-              if (!matchesFilters(updatedItem, statusFilter, typeFilter, activeTag, search)) {
-                next = next.filter((item) => item.id !== updatedItem.id);
-              }
-              const sorted = sortItems(next, sort);
-              localStorage.setItem("queueit_items_cache", JSON.stringify(sorted));
-              return sorted;
-            });
-          } else if (payload.eventType === "DELETE") {
-            const deletedId = payload.old.id;
-            setItems((prev) => {
-              const next = prev.filter((item) => item.id !== deletedId);
-              localStorage.setItem("queueit_items_cache", JSON.stringify(next));
-              return next;
-            });
-            setTotal((prev) => Math.max(0, prev - 1));
-          }
-        }
-      )
-      .subscribe();
+    if (prevProcessingCountRef.current > 0 && processingCount === 0) {
+      mutate("api/collections");
+      mutate(ANALYTICS_CACHE_KEY);
+      mutate(RECOMMENDATION_CACHE_KEY);
+    }
+    prevProcessingCountRef.current = processingCount;
+  }, [processingCount]);
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [sort, statusFilter, typeFilter, activeTag, search]);
-
-  // Reset visibleCount when filters change
+  // Reset pagination & selection when filters change
   useEffect(() => {
     setVisibleCount(15);
-  }, [search, activeTag, statusFilter, typeFilter, sort]);
+    setSelectedIds(new Set());
+  }, [debouncedSearch, activeTag, statusFilter, typeFilter, sort, selectedCollectionId]);
 
-  // Unified Poller for processing items - runs every 2s
-  useEffect(() => {
-    const processingItems = items.filter((item) => item.processing_status === "processing");
-    if (processingItems.length === 0) return;
-
-    const interval = setInterval(() => {
-      processingItems.forEach(async (pItem) => {
-        try {
-          const updated = await getItem(pItem.id);
-          if (updated && updated.processing_status !== "processing") {
-            setItems((prev) => {
-              const next = prev.map((item) => (item.id === pItem.id ? mapDbItemToQueueItem(updated) : item));
-              localStorage.setItem("queueit_items_cache", JSON.stringify(next));
-              return next;
-            });
-          }
-        } catch (e) {
-          console.error("Poller failed for item", pItem.id, e);
-        }
-      });
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [items]);
-
-  // IntersectionObserver for incremental virtualization
+  // Infinite Scroll IntersectionObserver
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
@@ -345,84 +226,186 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
     };
   }, [items.length, visibleCount]);
 
-  // Optimistic Handlers
-  const handleStatusChangeOptimistic = useCallback(async (id: string, newStatus: QueueItem["status"]) => {
-    const oldItems = [...items];
-    
-    setItems((prev) => {
-      const next = prev.map((item) => {
+  // Handle select toggling
+  const handleSelectToggle = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllToggle = () => {
+    const visibleItems = items.slice(0, visibleCount);
+    const allSelected = visibleItems.every((item) => selectedIds.has(item.id));
+
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        // Deselect all visible
+        visibleItems.forEach((item) => next.delete(item.id));
+      } else {
+        // Select all visible
+        visibleItems.forEach((item) => next.add(item.id));
+      }
+      return next;
+    });
+  };
+
+  // SWR mutation triggers for optimistic updates
+  const handleStatusChangeOptimistic = useCallback(
+    async (id: string, newStatus: QueueItem["status"]) => {
+      const previousItems = [...items];
+      const nextItems = items.map((item) => {
         if (item.id === id) {
-          return { ...item, status: newStatus };
+          return {
+            ...item,
+            status: newStatus,
+            read_progress: newStatus === "completed" ? 100 : newStatus === "unread" ? 0 : item.read_progress,
+          };
         }
         return item;
       });
-      const filtered = next.filter((item) => matchesFilters(item, statusFilter, typeFilter, activeTag, search));
-      localStorage.setItem("queueit_items_cache", JSON.stringify(filtered));
-      return filtered;
-    });
 
-    try {
-      const res = await updateItem(id, { status: newStatus });
-      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
-      toast.success(newStatus === "completed" ? "Marked as complete! ✓" : "Status updated");
-    } catch (e: any) {
-      setItems(oldItems);
-      localStorage.setItem("queueit_items_cache", JSON.stringify(oldItems));
-      toast.error("Failed to update status", { description: e.message });
-    }
-  }, [items, statusFilter, typeFilter, activeTag, search]);
+      // Optimistic mutate SWR
+      mutateItems({ items: nextItems, total: nextItems.length }, { revalidate: false });
 
-  const handleFavoriteToggleOptimistic = useCallback(async (id: string) => {
-    const oldItems = [...items];
-    let isFav = false;
-    
-    setItems((prev) => {
-      const next = prev.map((item) => {
+      try {
+        const { updateItem } = await import("@/lib/api");
+        await updateItem(id, { status: newStatus });
+        toast.success(newStatus === "completed" ? "Marked complete! ✓" : "Status updated");
+        mutateItems();
+        mutate(ANALYTICS_CACHE_KEY);
+        mutate(RECOMMENDATION_CACHE_KEY);
+      } catch (err: any) {
+        mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
+        toast.error("Failed to update status", { description: err.message });
+      }
+    },
+    [items, mutateItems]
+  );
+
+  const handleFavoriteToggleOptimistic = useCallback(
+    async (id: string) => {
+      const previousItems = [...items];
+      let isFav = false;
+      const nextItems = items.map((item) => {
         if (item.id === id) {
           isFav = !item.is_favorite;
           return { ...item, is_favorite: isFav };
         }
         return item;
       });
-      localStorage.setItem("queueit_items_cache", JSON.stringify(next));
-      return next;
-    });
+
+      mutateItems({ items: nextItems, total: nextItems.length }, { revalidate: false });
+
+      try {
+        const { updateItem } = await import("@/lib/api");
+        await updateItem(id, { is_favorite: isFav });
+        toast.success(isFav ? "Added to favorites ★" : "Removed from favorites");
+        mutateItems();
+        mutate(ANALYTICS_CACHE_KEY);
+        mutate(RECOMMENDATION_CACHE_KEY);
+      } catch (err: any) {
+        mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
+        toast.error("Failed to toggle favorite", { description: err.message });
+      }
+    },
+    [items, mutateItems]
+  );
+
+  const handleDeleteOptimistic = useCallback(
+    async (id: string) => {
+      const previousItems = [...items];
+      const nextItems = items.filter((item) => item.id !== id);
+
+      mutateItems({ items: nextItems, total: nextItems.length }, { revalidate: false });
+
+      try {
+        const { deleteItem } = await import("@/lib/api");
+        await deleteItem(id);
+        toast.success("Item deleted");
+        mutateItems();
+        mutate(ANALYTICS_CACHE_KEY);
+        mutate(RECOMMENDATION_CACHE_KEY);
+      } catch (err: any) {
+        mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
+        toast.error("Failed to delete item", { description: err.message });
+      }
+    },
+    [items, mutateItems]
+  );
+
+  // Bulk operation triggers
+  const handleBulkActionTrigger = async (
+    action: "delete" | "move" | "status" | "favorite",
+    actionData?: any
+  ) => {
+    if (selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds);
+
+    const previousItems = [...items];
+    let nextItems = [...items];
+
+    if (action === "delete") {
+      if (!window.confirm(`Delete ${ids.length} selected items?`)) return;
+      nextItems = nextItems.filter((item) => !selectedIds.has(item.id));
+    } else if (action === "favorite") {
+      nextItems = nextItems.map((item) =>
+        selectedIds.has(item.id) ? { ...item, is_favorite: !!actionData.is_favorite } : item
+      );
+    } else if (action === "status") {
+      nextItems = nextItems.map((item) =>
+        selectedIds.has(item.id)
+          ? {
+              ...item,
+              status: actionData.status,
+              read_progress:
+                actionData.status === "completed"
+                  ? 100
+                  : actionData.status === "unread"
+                  ? 0
+                  : item.read_progress,
+            }
+          : item
+      );
+    } else if (action === "move") {
+      nextItems = nextItems.map((item) =>
+        selectedIds.has(item.id) ? { ...item, collection_id: actionData.collection_id } : item
+      );
+    }
+
+    // Mutate SWR optimistically
+    mutateItems({ items: nextItems, total: nextItems.length }, { revalidate: false });
 
     try {
-      const res = await updateItem(id, { is_favorite: isFav });
-      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
-      toast.success(isFav ? "Added to favorites ★" : "Removed from favorites");
-    } catch (e: any) {
-      setItems(oldItems);
-      localStorage.setItem("queueit_items_cache", JSON.stringify(oldItems));
-      toast.error("Failed to update favorite", { description: e.message });
-    }
-  }, [items]);
+      await bulkItemsAction({
+        ids,
+        action,
+        status: action === "status" ? actionData.status : undefined,
+        collection_id: action === "move" ? actionData.collection_id : undefined,
+        is_favorite: action === "favorite" ? actionData.is_favorite : undefined,
+      });
 
-  const handleDeleteOptimistic = useCallback(async (id: string) => {
-    const oldItems = [...items];
-    
-    setItems((prev) => {
-      const next = prev.filter((item) => item.id !== id);
-      localStorage.setItem("queueit_items_cache", JSON.stringify(next));
-      return next;
-    });
-    setTotal((prev) => Math.max(0, prev - 1));
-
-    try {
-      const res = await deleteItem(id);
-      if (res && typeof res === 'object' && 'detail' in res) throw new Error((res as any).detail);
-      toast.success("Item deleted");
-    } catch (e: any) {
-      setItems(oldItems);
-      setTotal(oldItems.length);
-      localStorage.setItem("queueit_items_cache", JSON.stringify(oldItems));
-      toast.error("Failed to delete item", { description: e.message });
+      toast.success(`Bulk operations completed on ${ids.length} items!`);
+      setSelectedIds(new Set());
+      mutateItems();
+      mutate(ANALYTICS_CACHE_KEY);
+      mutate(RECOMMENDATION_CACHE_KEY);
+    } catch (err: any) {
+      mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
+      toast.error("Bulk operations failed", { description: err.message });
     }
-  }, [items]);
+  };
 
   const handleRefresh = () => {
-    fetchItems({ showRefreshing: true });
+    mutateItems();
+    mutate(ANALYTICS_CACHE_KEY);
+    mutate(RECOMMENDATION_CACHE_KEY);
     onRefresh?.();
   };
 
@@ -445,27 +428,139 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
       const res = await recalculatePriorities();
       if (res) {
         toast.success(`Priorities recalculated for ${res.updated ?? 0} items`);
-        fetchItems({ showRefreshing: true });
+        mutateItems();
       }
     } catch (err: any) {
-      const message = typeof err === "string" ? err : err instanceof Error ? err.message : JSON.stringify(err, null, 2);
-      toast.error("Failed to recalculate", { description: message });
+      toast.error("Failed to recalculate priorities", { description: err.message });
     } finally {
       setRecalculating(false);
     }
   };
 
+  const visibleItems = items.slice(0, visibleCount);
+  
+  // Grouping items by completion date for History view
+  const groupedItems: { [key: string]: typeof items } = {
+    "Completed Today": [],
+    "Yesterday": [],
+    "Last Week": [],
+    "Older": [],
+  };
+
+  if (isHistoryView) {
+    visibleItems.forEach((item) => {
+      const group = getHistoryGroup(item.completed_at);
+      groupedItems[group].push(item);
+    });
+  }
+
+  const isAllSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedIds.has(item.id));
+
   return (
     <div>
+      {/* Bulk actions toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="glass p-3 rounded-xl border border-primary/25 bg-primary/5 flex items-center justify-between mb-4 animate-in slide-in-from-top-2 duration-250">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleSelectAllToggle}
+              className="flex items-center justify-center w-5 h-5 rounded border border-border bg-secondary/50 text-primary cursor-pointer"
+            >
+              {isAllSelected && <Check className="h-3.5 w-3.5" />}
+            </button>
+            <span className="text-xs font-bold">
+              {selectedIds.size} {selectedIds.size === 1 ? "item" : "items"} selected
+            </span>
+          </div>
+
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleBulkActionTrigger("favorite", { is_favorite: true })}
+              className="h-8 text-xs cursor-pointer text-red-400 hover:bg-red-500/5 hover:text-red-500"
+              title="Add to Favorites"
+            >
+              <Heart className="h-4 w-4 fill-red-400" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleBulkActionTrigger("status", { status: "completed" })}
+              className="h-8 text-xs cursor-pointer text-emerald-400 hover:bg-emerald-500/5 hover:text-emerald-500"
+              title="Mark Complete"
+            >
+              <CheckCircle2 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleBulkActionTrigger("status", { status: "unread" })}
+              className="h-8 text-xs cursor-pointer text-blue-400 hover:bg-blue-500/5 hover:text-blue-500"
+              title="Re-queue"
+            >
+              <CircleDot className="h-4 w-4" />
+            </Button>
+
+            {/* Bulk Move Dropdown */}
+            {collections.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  className="inline-flex items-center justify-center rounded-md hover:bg-accent/40 h-8 w-8 cursor-pointer text-amber-400 hover:bg-amber-500/5 hover:text-amber-500 transition-colors"
+                  title="Move to Folder"
+                >
+                  <FolderSync className="h-4 w-4" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="glass border-border/20 max-h-48 overflow-y-auto">
+                  <DropdownMenuItem
+                    className="text-xs cursor-pointer"
+                    onClick={() => handleBulkActionTrigger("move", { collection_id: null })}
+                  >
+                    Remove from folder
+                  </DropdownMenuItem>
+                  {collections.map((col) => (
+                    <DropdownMenuItem
+                      key={col.id}
+                      className="text-xs cursor-pointer"
+                      onClick={() => handleBulkActionTrigger("move", { collection_id: col.id })}
+                    >
+                      {col.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleBulkActionTrigger("delete")}
+              className="h-8 text-xs cursor-pointer text-destructive hover:bg-destructive/5"
+              title="Delete Selected"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSelectedIds(new Set())}
+              className="h-8 text-xs cursor-pointer"
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Search + Filter bar */}
       <div className="space-y-3 mb-6">
-        {/* Search row */}
+        {/* Search row — ~85% width */}
         <div className="flex gap-2">
-          <div className="relative flex-1">
+          <div className="relative w-full md:w-[85%]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               ref={searchInputRef}
-              placeholder="Search your queue..."
+              placeholder="Search your queue (title, summary, tags)..."
               defaultValue={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9 glass border-border/20"
@@ -475,34 +570,36 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
             variant="ghost"
             size="icon"
             onClick={handleRefresh}
-            disabled={refreshing}
+            disabled={isLoading}
             className="text-muted-foreground hover:text-foreground cursor-pointer shrink-0"
             title="Refresh"
           >
-            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
           </Button>
         </div>
 
         {/* Filter chips row */}
         <div className="flex flex-wrap gap-2 items-center">
           {/* Status filter */}
-          <div className="flex gap-1">
-            {STATUS_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setStatusFilter(opt.value)}
-                className={`text-xs px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
-                  statusFilter === opt.value
-                    ? "bg-primary/15 text-primary border-primary/30"
-                    : "bg-secondary/30 text-muted-foreground border-border/20 hover:border-border/40"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          {!isHistoryView && (
+            <div className="flex gap-1">
+              {STATUS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => setStatusFilter(opt.value)}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
+                    statusFilter === opt.value
+                      ? "bg-primary/15 text-primary border-primary/30"
+                      : "bg-secondary/30 text-muted-foreground border-border/20 hover:border-border/40"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
 
-          <div className="h-4 w-px bg-border/40 mx-1 hidden sm:block" />
+          {!isHistoryView && <div className="h-4 w-px bg-border/40 mx-1 hidden sm:block" />}
 
           {/* Type filter */}
           <select
@@ -584,60 +681,93 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="col-span-1 md:col-span-2 grid grid-cols-2 gap-4">
           <div className="glass p-4 rounded-xl border border-border/20">
-            <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Estimated Time</p>
-            <p className="text-2xl font-semibold">
-              {Math.round(items.reduce((acc, item) => acc + (item.duration_seconds ?? 0), 0) / 60)}h
+            <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">
+              Estimated Time
+            </p>
+            <p className="text-2xl font-bold tracking-tight">
+              {formatTotalTime(analytics?.total_estimated_time_minutes ?? 0)}
             </p>
           </div>
           <div className="glass p-4 rounded-xl border border-border/20">
-            <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider">Focus Score</p>
-            <p className="text-2xl font-semibold">
-              {items.length > 0 
-                ? Math.round(items.reduce((acc, item) => acc + (item.priority_score ?? 0), 0) / items.length) 
-                : 0}
+            <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">
+              Read Progress
+            </p>
+            <p className="text-2xl font-bold tracking-tight">
+              {analytics?.total_completed ?? 0}/{analytics?.total_items ?? 0}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">
+              ({analytics?.completed_ratio_percent ?? 0}% completed)
             </p>
           </div>
         </div>
         <div className="glass p-4 rounded-xl border border-border/20 bg-primary/5 border-primary/10">
-          <p className="text-xs text-primary/80 font-medium mb-1 flex items-center gap-1.5">
-            <Sparkles className="h-3 w-3" /> AI Recommendation
+          <p className="text-xs text-primary/80 font-bold mb-1 flex items-center gap-1.5 uppercase tracking-wider">
+            <Sparkles className="h-3 w-3 animate-pulse" /> AI Recommendation
           </p>
-          <p className="text-sm font-medium">
-            {items[0] ? `Focus on "${items[0].title}" next` : "Add items to get recommendations"}
-          </p>
+          {recommendationLoading ? (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1.5 animate-pulse">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+              <span>Analyzing recommendations...</span>
+            </div>
+          ) : recommendation && recommendation.item_id ? (
+            <div className="space-y-1 mt-1.5">
+              <p className="text-xs font-semibold leading-normal line-clamp-2">
+                Focus on <span className="text-primary font-bold">"{recommendation.title}"</span> next
+              </p>
+              {recommendation.reason && (
+                <p className="text-[10px] text-muted-foreground leading-normal line-clamp-1 italic">
+                  Reason: {recommendation.reason}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs font-semibold leading-relaxed text-muted-foreground mt-1.5">
+              {recommendation?.reason || "Add items to get recommendations"}
+            </p>
+          )}
         </div>
       </div>
 
       {/* Loading */}
-      {loading ? (
+      {isLoading ? (
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3, 4].map((i) => (
             <QueueCardSkeleton key={i} />
           ))}
         </div>
       ) : items.length === 0 ? (
-        /* Empty state */
+        /* Empty state — distinct "No matches" when searching */
         <Card className="glass border-border/20 border-dashed mt-4">
           <CardContent className="flex flex-col items-center justify-center py-20 text-center">
             <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10">
-              <Inbox className="h-10 w-10 text-primary" />
+              {debouncedSearch ? (
+                <Search className="h-10 w-10 text-primary" />
+              ) : (
+                <Inbox className="h-10 w-10 text-primary" />
+              )}
             </div>
             <h2 className="text-xl font-semibold mb-2">
-              {hasFilters ? "No items match your filters" : "Your queue is empty"}
+              {debouncedSearch
+                ? "No matching items found."
+                : selectedCollectionId
+                ? "No items"
+                : hasFilters
+                ? "No items match your filters"
+                : "Your queue is empty"}
             </h2>
             <p className="max-w-md text-muted-foreground mb-8">
-              {hasFilters
-                ? "Try adjusting your search or filters to find what you're looking for."
+              {debouncedSearch
+                ? `No results found for "${debouncedSearch}". Try a different search term.`
+                : selectedCollectionId
+                ? "This collection is currently empty. Drag and drop items here from 'All Items' or assign them using the item details to organize your content."
+                : hasFilters
+                ? "Try adjusting your filters to find what you're looking for."
                 : "Start saving articles, videos, tweets, GitHub repos, and more. Everything you want to consume later will appear here."}
             </p>
-            {hasFilters ? (
-              <Button
-                variant="outline"
-                onClick={clearFilters}
-                className="cursor-pointer"
-              >
+            {debouncedSearch || (hasFilters && !selectedCollectionId) ? (
+              <Button variant="outline" onClick={clearFilters} className="cursor-pointer">
                 <X className="mr-2 h-4 w-4" />
-                Clear filters
+                {debouncedSearch ? "Clear search" : "Clear filters"}
               </Button>
             ) : (
               <AddItemDialog
@@ -647,7 +777,7 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
                     className="gradient-primary text-white border-0 hover:opacity-90 transition-opacity glow-primary cursor-pointer"
                   >
                     <Plus className="mr-2 h-4 w-4" />
-                    Add your first item
+                    {selectedCollectionId ? "Add item to collection" : "Add your first item"}
                   </Button>
                 }
                 onItemAdded={handleRefresh}
@@ -655,19 +785,82 @@ export function QueueList({ refreshSignal, onRefresh, initialStatusFilter }: Que
             )}
           </CardContent>
         </Card>
+      ) : isHistoryView ? (
+        /* Categorized History List View */
+        <div className="space-y-6">
+          {Object.entries(groupedItems).map(([groupName, groupItems]) => {
+            if (groupItems.length === 0) return null;
+            return (
+              <div key={groupName} className="space-y-3">
+                <h3 className="text-sm font-bold text-primary tracking-wide pt-4 border-b border-border/10 pb-1.5 flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                  {groupName}
+                </h3>
+                <div className="space-y-3">
+                  {groupItems.map((item) => (
+                    <div key={item.id} className="flex gap-3 items-center w-full">
+                      {/* Checkbox for bulk actions */}
+                      <button
+                        onClick={() => handleSelectToggle(item.id)}
+                        className={`flex items-center justify-center w-5 h-5 rounded border cursor-pointer transition-all ${
+                          selectedIds.has(item.id)
+                            ? "bg-primary text-white border-primary"
+                            : "border-border hover:border-primary/50 text-transparent bg-secondary/20"
+                        }`}
+                      >
+                        {selectedIds.has(item.id) && <Check className="h-3.5 w-3.5" />}
+                      </button>
+
+                      <div className="flex-1 min-w-0">
+                        <QueueItemCard
+                          item={item}
+                          onUpdate={handleRefresh}
+                          onTagClick={handleTagClick}
+                          onDeleteOptimistic={handleDeleteOptimistic}
+                          onStatusChangeOptimistic={handleStatusChangeOptimistic}
+                          onFavoriteToggleOptimistic={handleFavoriteToggleOptimistic}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {items.length > visibleCount && (
+            <div ref={sentinelRef} className="h-10 flex items-center justify-center pt-2">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            </div>
+          )}
+        </div>
       ) : (
-        /* Items list */
+        /* Items list with incremental render scrolling */
         <div className="space-y-3">
-          {items.slice(0, visibleCount).map((item) => (
-            <QueueItemCard
-              key={item.id}
-              item={item}
-              onUpdate={handleRefresh}
-              onTagClick={handleTagClick}
-              onDeleteOptimistic={handleDeleteOptimistic}
-              onStatusChangeOptimistic={handleStatusChangeOptimistic}
-              onFavoriteToggleOptimistic={handleFavoriteToggleOptimistic}
-            />
+          {visibleItems.map((item) => (
+            <div key={item.id} className="flex gap-3 items-center w-full">
+              {/* Checkbox for bulk actions */}
+              <button
+                onClick={() => handleSelectToggle(item.id)}
+                className={`flex items-center justify-center w-5 h-5 rounded border cursor-pointer transition-all ${
+                  selectedIds.has(item.id)
+                    ? "bg-primary text-white border-primary"
+                    : "border-border hover:border-primary/50 text-transparent bg-secondary/20"
+                }`}
+              >
+                {selectedIds.has(item.id) && <Check className="h-3.5 w-3.5" />}
+              </button>
+
+              <div className="flex-1 min-w-0">
+                <QueueItemCard
+                  item={item}
+                  onUpdate={handleRefresh}
+                  onTagClick={handleTagClick}
+                  onDeleteOptimistic={handleDeleteOptimistic}
+                  onStatusChangeOptimistic={handleStatusChangeOptimistic}
+                  onFavoriteToggleOptimistic={handleFavoriteToggleOptimistic}
+                />
+              </div>
+            </div>
           ))}
           {items.length > visibleCount && (
             <div ref={sentinelRef} className="h-10 flex items-center justify-center pt-2">

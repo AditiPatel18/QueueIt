@@ -1,0 +1,759 @@
+﻿"""
+AI Service for QueueIt - Handles tagging, summarization, and priority scoring.
+Uses Google Gemini API (free tier).
+Fails gracefully if API key is missing or API call fails.
+"""
+
+import google.generativeai as genai
+from typing import List, Optional
+import json
+import re
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _build_fallback_summary(title: str, content: str, description: str = "", content_type: str = "article") -> Optional[str]:
+    """Return the standard fallback message when AI summary cannot be generated."""
+    return "Summary could not be generated."
+
+
+def _clean_greetings(text: str) -> str:
+    """Strip greetings, intro phrases, and preamble from the beginning of the text."""
+    if not text:
+        return ""
+    text = text.strip()
+    
+    # List of regex patterns matching common greetings/preambles at the start of a summary
+    # Match sentences or phrases up to punctuation/greetings
+    patterns = [
+        r"^(?:hello|hi|hey|welcome|welcome\s+back)(?:\s+everyone|\s+guys|\s+folks|\s+there|\s+to\s+the\s+channel)?(?:[,.!?\s]+|$)",
+        r"^in\s+this\s+(?:video|tutorial|content)(?:,\s+we|,\s+i|,\s+this)?(?:\s+will\s+talk\s+about|\s+will\s+show\s+you|\s+discusses|\s+covers|\s+explains)?(?:[,.!?\s]+|$)",
+        r"^today(?:\s+we\s+are\s+going\s+to|\s+i'm\s+going\s+to|\s+we'll)?\s+(?:discuss|learn|cover|talk\s+about|look\s+at)(?:[,.!?\s]+|$)",
+    ]
+    
+    changed = True
+    while changed:
+        changed = False
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", text, flags=re.IGNORECASE)
+            if cleaned != text:
+                text = cleaned.strip()
+                changed = True
+                break
+                
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+    return text
+
+
+def _clean_markdown(text: str) -> str:
+    """Clean up markdown elements from the text to ensure it's plain text."""
+    if not text:
+        return ""
+    # Strip markdown bolding **text** -> text
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    # Strip markdown headers: ### Header -> Header
+    text = re.sub(r'#+\s+([^\n]+)', r'\1', text)
+    # Strip markdown list markers at start of lines: * item or - item -> item
+    text = re.sub(r'^[ \t]*[*+-]\s+', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+
+def _chunk_text(text: str, max_chars: int) -> List[str]:
+    """Split text into chunks of at most max_chars characters, splitting on sentence/space boundaries."""
+    if not text:
+        return []
+    
+    paragraphs = text.split('\n')
+    chunks = []
+    current_chunk = []
+    current_len = 0
+    
+    for para in paragraphs:
+        para_len = len(para) + 1  # count newline
+        if current_len + para_len > max_chars:
+            if para_len > max_chars:
+                if current_chunk:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = []
+                    current_len = 0
+                
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                for sent in sentences:
+                    sent_len = len(sent) + 1
+                    if current_len + sent_len > max_chars:
+                        if sent_len > max_chars:
+                            words = sent.split(' ')
+                            for word in words:
+                                word_len = len(word) + 1
+                                if current_len + word_len > max_chars:
+                                    if current_chunk:
+                                        chunks.append(' '.join(current_chunk))
+                                        current_chunk = [word]
+                                        current_len = word_len
+                                    else:
+                                        chunks.append(word[:max_chars])
+                                        current_chunk = [word[max_chars:]]
+                                        current_len = len(word[max_chars:]) + 1
+                                else:
+                                    current_chunk.append(word)
+                                    current_len += word_len
+                        else:
+                            if current_chunk:
+                                chunks.append(' '.join(current_chunk))
+                            current_chunk = [sent]
+                            current_len = sent_len
+                    else:
+                        current_chunk.append(sent)
+                        current_len += sent_len
+            else:
+                if current_chunk:
+                    chunks.append('\n'.join(current_chunk))
+                current_chunk = [para]
+                current_len = para_len
+        else:
+            current_chunk.append(para)
+            current_len += para_len
+            
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+        
+    return chunks
+
+
+class AIService:
+    def __init__(self, api_key: Optional[str] = None):
+        self.enabled = False
+        self._config_verified = False
+        self._init_error = None
+        if api_key:
+            try:
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
+                self.enabled = True
+                logger.info("AI Service initialized successfully")
+            except Exception as e:
+                logger.error(f"AI Service initialization failed: {e}")
+                self.enabled = False
+                self._init_error = e
+        else:
+            logger.warning("No API key provided. AI features disabled.")
+            self._init_error = ValueError("GEMINI_API_KEY is not set.")
+
+    
+    def _clean_json_response(self, text: str) -> str:
+        """Extract clean JSON from AI response that might contain extra text."""
+        # Remove markdown code blocks if present
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        text = text.strip()
+        return text
+
+    def verify_configuration(self):
+        """Verify API key and model existence."""
+        if self._config_verified:
+            return
+        
+        if not self.enabled:
+            err = getattr(self, "_init_error", None) or ValueError("AI Service is disabled.")
+            raise err
+            
+        try:
+            # list_models to verify connectivity, API key, and model existence
+            models = list(genai.list_models())
+            model_names = [m.name for m in models]
+            target_model = "models/gemini-2.5-flash"
+            all_names = model_names + [n.replace("models/", "") for n in model_names]
+            if target_model not in model_names and "gemini-2.5-flash" not in all_names:
+                raise ValueError(f"Model {target_model} does not exist in available models: {model_names}")
+            self._config_verified = True
+            logger.info("AI Service API key and model verified successfully.")
+            print("AI Service API key and model verified successfully.")
+        except Exception as e:
+            logger.error(f"Configuration verification failed: {e}")
+            print(f"Configuration verification failed: {e}")
+            raise e
+
+    def _call_generative_model(self, prompt: str, content_len: int) -> str:
+        import traceback
+        model_name = getattr(self.model, "model_name", "gemini-2.5-flash")
+        
+        # Log prompt length, model name, transcript length
+        logger.info(f"model: {model_name}")
+        logger.info(f"prompt length: {len(prompt)}")
+        logger.info(f"transcript length: {content_len}")
+        print(f"model: {model_name}")
+        print(f"prompt length: {len(prompt)}")
+        print(f"transcript length: {content_len}")
+        
+        try:
+            response = self.model.generate_content(prompt, request_options={"timeout": 60.0})
+            raw_text = response.text if response and hasattr(response, 'text') else ""
+            
+            # Log successful API response
+            logger.info(f"API response: {raw_text}")
+            try:
+                print(f"API response: {raw_text}")
+            except UnicodeEncodeError:
+                print(f"API response: {raw_text.encode('ascii', errors='replace').decode('ascii')}")
+            
+            return raw_text
+        except Exception as e:
+            tb = traceback.format_exc()
+            
+            # Log real error and exception stack trace
+            logger.error("=== LLM CALL FAILED ===")
+            logger.error(f"model: {model_name}")
+            logger.error(f"transcript length: {content_len}")
+            logger.error(f"prompt length: {len(prompt)}")
+            logger.error(f"stack trace:\n{tb}")
+            logger.error("=======================")
+            
+            print("=== LLM CALL FAILED ===")
+            print(f"model: {model_name}")
+            print(f"transcript length: {content_len}")
+            print(f"prompt length: {len(prompt)}")
+            print(f"stack trace:\n{tb}")
+            print("=======================")
+            
+            raise e
+    
+    def generate_summary(self, title: str, content: str = "", description: str = "", content_type: str = "article") -> Optional[str]:
+        """Generate a structured summary for a single item. Used for backfill/on-demand generation.
+
+        Always returns a summary string (never None) ΓÇö uses AI if available,
+        otherwise falls back to standard message.
+        """
+        # Ensure extracted_text is passed to the LLM
+        if not content or not content.strip():
+            logger.warning("Empty content passed to generate_summary")
+            raise ValueError("Content to summarize cannot be empty.")
+
+        # Verify API key and model existence
+        self.verify_configuration()
+
+        try:
+            # Generate structured summary via analyze_content
+            raw_res = self.analyze_content(title, content, content_type)
+            raw_summary = raw_res.get("summary")
+            if raw_summary and raw_summary != "Summary could not be generated.":
+                return raw_summary
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"generate_summary failed: {e}")
+            logger.error(f"Stack Trace:\n{tb}")
+            print(f"generate_summary failed: {e}")
+            print(f"Stack Trace:\n{tb}")
+            raise e
+
+        # If the result of analysis doesn't contain a valid summary, we raise ValueError rather than swallowing
+        raise ValueError("generate_summary failed to produce a valid summary.")
+
+
+    def generate_tags(self, title: str, content: str = "", source_type: str = "article") -> List[str]:
+        """Generate tags for an item using AI or fallback.
+
+        Returns a list of tags (lowercase hyphenated). If AI disabled, returns ['uncategorized'].
+        """
+        if self.enabled:
+            res = self.analyze_content(title, content, source_type)
+            if res and isinstance(res.get("tags"), list):
+                return res.get("tags")
+        return ["uncategorized"]
+
+    def _summarize_chunk(self, chunk_text: str) -> str:
+        prompt = f"""You are a helper summarizing a section of a long transcript or article.
+Write a concise summary of the following content, focusing on key technical details, concepts, facts, and explanations.
+Write the summary in the same language as the source content.
+Do not include any greetings, intros, transitions, or meta-commentary.
+
+CONTENT PORTION:
+{chunk_text}
+"""
+        try:
+            return self._call_generative_model(prompt, len(chunk_text))
+        except Exception as e:
+            logger.error(f"Failed to summarize chunk: {e}")
+            raise e
+
+    def _parse_gemini_json(self, raw_text: str) -> dict:
+        try:
+            text = self._clean_json_response(raw_text)
+            result = json.loads(text)
+            return result
+        except Exception as e:
+            logger.error(f"JSON parsing failed for response: {raw_text}, error: {e}")
+            try:
+                print(f"JSON parsing failed for response: {raw_text}, error: {e}")
+            except UnicodeEncodeError:
+                safe_text = raw_text.encode('ascii', errors='replace').decode('ascii')
+                print(f"JSON parsing failed for response: {safe_text}, error: {e}")
+            raise e
+
+
+    def _single_pass_analysis(self, title: str, content: str, content_type: str) -> dict:
+        word_count = len(content.split()) if content else 0
+        
+        # Adjust summary length instructions based on content word count
+        if word_count < 100:
+            len_instruction = "Return a short summary of 1-2 concise sentences/paragraphs."
+            summary_format = "YOUR SUMMARY HERE (strictly follow the summary guidelines, 1-2 plain text sentences or paragraphs)"
+        elif word_count < 300:
+            len_instruction = "Return a summary of 2-3 paragraphs."
+            summary_format = "YOUR SUMMARY HERE (strictly follow the summary guidelines, 2-3 plain text paragraphs separated by \\n\\n)"
+        else:
+            len_instruction = "Return 4-8 paragraphs."
+            summary_format = "YOUR SUMMARY HERE (strictly follow the summary guidelines, 4-8 plain text paragraphs separated by \\n\\n)"
+
+        prompt = f"""You are a content analyzer and summarizer for QueueIt.
+Analyze the following content and return a JSON payload with tags, summary, and priority score.
+
+TITLE: {title}
+TYPE: {content_type}
+CONTENT:
+{content}
+
+Instructions for the 'summary' field:
+You are an expert technical summarizer.
+Read the complete transcript/content.
+Do NOT repeat the introduction.
+Do NOT copy sentences.
+Identify the main topic.
+Summarize the important ideas.
+Explain what the user will learn.
+Keep it concise but informative.
+{len_instruction}
+Avoid filler.
+Avoid greetings.
+Avoid sponsor messages.
+Avoid advertisements.
+Avoid "Welcome back".
+Avoid timestamps.
+
+If educational: explain concepts.
+If news: summarize events.
+If podcast: summarize discussion.
+If motivational: summarize lessons.
+
+Return plain text only for the summary. Do not use markdown headings, bold text, lists, or bullets. Just return the requested paragraphs/sentences separated by newlines.
+
+Return ONLY a JSON object with this structure:
+{{
+  "tags": ["tag1", "tag2"],
+  "summary": "{summary_format}",
+  "priority": 70
+}}
+"""
+        print(f"[PIPELINE LOG] [AI Service] text sent to Gemini length: {len(prompt)}")
+        try:
+            raw_text = self._call_generative_model(prompt, len(content))
+            print(f"[PIPELINE LOG] [AI Service] Gemini response length: {len(raw_text)}")
+            
+            result = self._parse_gemini_json(raw_text)
+            if result and isinstance(result, dict) and result.get("summary"):
+                return result
+                
+            print("[DEBUG LOG] JSON parsing failed or summary missing. Retrying with simpler prompt...")
+            return self._retry_single_pass(content, content_type)
+        except Exception as e:
+            logger.error(f"Single pass analysis failed: {e}")
+            print(f"[DEBUG LOG] Single pass failed: {e}. Retrying with simpler prompt...")
+            return self._retry_single_pass(content, content_type)
+
+    def _retry_single_pass(self, content: str, content_type: str) -> dict:
+        truncated_content = content[:30000]
+        word_count = len(truncated_content.split())
+        
+        if word_count < 100:
+            len_instruction = "1-2 concise sentences/paragraphs"
+        elif word_count < 300:
+            len_instruction = "2-3 paragraphs"
+        else:
+            len_instruction = "4-8 paragraphs"
+
+        prompt = f"""You are a content analyzer. Summarize this content and return a JSON object with tags, summary, and priority.
+
+CONTENT:
+{truncated_content}
+
+Instructions:
+- You are an expert technical summarizer.
+- Write a structured plain-text summary of {len_instruction} in the same language as the content. Do not use markdown.
+- Return ONLY JSON:
+{{
+  "tags": ["tag1", "tag2"],
+  "summary": "YOUR PLAIN TEXT SUMMARY HERE ({len_instruction})",
+  "priority": 50
+}}
+"""
+        print(f"[PIPELINE LOG] [AI Service] text sent to Gemini length: {len(prompt)}")
+        try:
+            raw_text = self._call_generative_model(prompt, len(content))
+            print(f"[PIPELINE LOG] [AI Service] Gemini response length: {len(raw_text)}")
+            result = self._parse_gemini_json(raw_text)
+            if result and isinstance(result, dict) and result.get("summary"):
+                return result
+            raise ValueError(f"Failed to parse JSON response or 'summary' key missing in: {raw_text}")
+        except Exception as e:
+            logger.error(f"Simpler retry failed: {e}")
+            raise e
+
+
+    def _generate_final_summary_from_chunks(self, title: str, content_type: str, chunk_summaries_text: str) -> dict:
+        prompt = f"""You are given sequential summaries of different parts of a transcript or article.
+Create one final integrated summary of the entire content.
+
+TITLE: {title}
+TYPE: {content_type}
+COMBINED PARTIAL SUMMARIES:
+{chunk_summaries_text}
+
+Instructions:
+You are an expert technical summarizer.
+Do NOT repeat the introduction.
+Do NOT copy sentences.
+Identify the main topic.
+Summarize the important ideas.
+Explain what the user will learn.
+Keep it concise but informative.
+Return 4-8 paragraphs.
+Avoid filler.
+Avoid greetings.
+Avoid sponsor messages.
+Avoid advertisements.
+Avoid "Welcome back".
+Avoid timestamps.
+
+If educational: explain concepts.
+If news: summarize events.
+If podcast: summarize discussion.
+If motivational: summarize lessons.
+
+Return plain text only for the summary. Do not use markdown headings, bold text, lists, or bullets. Just return 4-8 paragraphs separated by newlines.
+
+Return ONLY a JSON object with this structure:
+{{
+  "tags": ["tag1", "tag2"],
+  "summary": "YOUR FINAL SUMMARY HERE (strictly follow the summary guidelines, 4-8 plain text paragraphs separated by \\n\\n)",
+  "priority": 70
+}}
+"""
+        print(f"[PIPELINE LOG] [AI Service] text sent to Gemini length: {len(prompt)}")
+        try:
+            raw_text = self._call_generative_model(prompt, len(chunk_summaries_text))
+            print(f"[PIPELINE LOG] [AI Service] Gemini response length: {len(raw_text)}")
+            result = self._parse_gemini_json(raw_text)
+            if result and isinstance(result, dict) and result.get("summary"):
+                return result
+            print("[DEBUG LOG] JSON parsing failed or summary missing. Retrying combined chunks summary with simpler prompt...")
+            return self._retry_final_combination(chunk_summaries_text)
+        except Exception as e:
+            logger.error(f"Chunk combination failed: {e}")
+            print(f"[DEBUG LOG] Chunk combination failed: {e}. Retrying with simpler prompt...")
+            return self._retry_final_combination(chunk_summaries_text)
+
+    def _retry_final_combination(self, chunk_summaries_text: str) -> dict:
+        prompt = f"""You are a content analyzer. Summarize these combined partial summaries and return a JSON object with tags, summary, and priority.
+
+COMBINED PARTIAL SUMMARIES:
+{chunk_summaries_text}
+
+Instructions:
+- Write a structured plain-text summary of 4-8 paragraphs in the same language as the content. Do not use markdown.
+- Return ONLY JSON:
+{{
+  "tags": ["tag1", "tag2"],
+  "summary": "YOUR PLAIN TEXT SUMMARY HERE (4-8 paragraphs)",
+  "priority": 50
+}}
+"""
+        print(f"[PIPELINE LOG] [AI Service] text sent to Gemini length: {len(prompt)}")
+        try:
+            raw_text = self._call_generative_model(prompt, len(chunk_summaries_text))
+            print(f"[PIPELINE LOG] [AI Service] Gemini response length: {len(raw_text)}")
+            result = self._parse_gemini_json(raw_text)
+            if result and isinstance(result, dict) and result.get("summary"):
+                return result
+            raise ValueError(f"Failed to parse JSON response or 'summary' key missing in: {raw_text}")
+        except Exception as e:
+            logger.error(f"Chunk combination retry failed: {e}")
+            raise e
+
+
+    def analyze_content(self, title: str, content: str, content_type: str = "article") -> dict:
+        """Analyze content using AI. Returns a dict with keys: tags, summary, priority."""
+        self.verify_configuration()
+        content_len = len(content) if content else 0
+
+        print(f"[PIPELINE LOG] [AI Service] extracted_text length: {content_len}")
+        print(f"[PIPELINE LOG] [AI Service] full_text length: {content_len}")
+
+        if not self.enabled:
+            summary = "Summary could not be generated."
+            print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+            return {
+                "tags": ["uncategorized"],
+                "summary": summary,
+                "priority": 50
+            }
+
+        # Check if length exceeds chunking threshold
+        max_context_chars = getattr(self, "max_context_chars", 12000)
+        if content_len > max_context_chars:
+            print(f"[DEBUG LOG] Content length {content_len} exceeds limit {max_context_chars}. Chunking...")
+            chunks = _chunk_text(content, max_context_chars)
+            print(f"[DEBUG LOG] Split into {len(chunks)} chunks.")
+            
+            chunk_summaries = []
+            for i, chunk in enumerate(chunks):
+                print(f"[DEBUG LOG] Summarizing chunk {i+1}/{len(chunks)}...")
+                chunk_sum = self._summarize_chunk(chunk)
+                if chunk_sum:
+                    chunk_summaries.append(chunk_sum)
+            
+            if not chunk_summaries:
+                print("[DEBUG LOG] All chunk summarizations failed.")
+                summary = "Summary could not be generated."
+                print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+                return {
+                    "tags": ["uncategorized"],
+                    "summary": summary,
+                    "priority": 50
+                }
+            
+            combined_text = "\n\n".join([f"Part {i+1} Summary:\n{cs}" for i, cs in enumerate(chunk_summaries)])
+            print(f"[DEBUG LOG] Combined chunk summaries length: {len(combined_text)}")
+            
+            result = self._generate_final_summary_from_chunks(title, content_type, combined_text)
+        else:
+            result = self._single_pass_analysis(title, content, content_type)
+
+        tags = result.get("tags", [])
+        summary = result.get("summary") or "Summary could not be generated."
+        priority = result.get("priority", 50)
+
+        # Clean markdown elements from summary to ensure plain text
+        summary = _clean_markdown(summary)
+
+        # Clean tags
+        cleaned_tags = []
+        if isinstance(tags, list):
+            for tag in tags[:5]:
+                if isinstance(tag, str):
+                    cleaned = tag.lower().strip().replace(' ', '-')
+                    cleaned = re.sub(r'[^a-z0-9-]', '', cleaned)
+                    if cleaned and len(cleaned) > 1:
+                        cleaned_tags.append(cleaned)
+        if not cleaned_tags:
+            cleaned_tags = ["uncategorized"]
+
+        # Clean priority
+        if isinstance(priority, (int, float)):
+            priority = max(0, min(100, int(priority)))
+        else:
+            priority = 50
+
+        print(f"[PIPELINE LOG] [AI Service] ai_summary length: {len(summary)}")
+        return {
+            "tags": cleaned_tags,
+            "summary": summary,
+            "priority": priority
+        }
+
+    def suggest_next_items(self, completed_tags: List[str], unread_items: List[dict]) -> dict:
+        """Suggests the best next item based on completed tags and item metadata.
+        
+        Returns: {"item_id": str|None, "title": str, "reason": str}
+        """
+        if not unread_items:
+            return {"item_id": None, "title": None, "reason": "No unread items in your queue. Add some content!"}
+
+        if not self.enabled:
+            # Fallback: pick highest priority item
+            best = max(unread_items, key=lambda x: x.get("priority_score", 0))
+            return {
+                "item_id": best.get("id"),
+                "title": best.get("title", "Untitled"),
+                "reason": f"Highest priority item (score: {best.get('priority_score', 50)})"
+            }
+            
+        # Prepare rich context for Gemini
+        tags_context = ", ".join(completed_tags[:20]) if completed_tags else "None yet"
+        items_context = []
+        for i, item in enumerate(unread_items[:15]):
+            tags = ", ".join(item.get("tags", [])[:3]) or "none"
+            summary = (item.get("ai_summary") or "")[:80]
+            priority = item.get("priority_score", 50)
+            read_time = item.get("estimated_read_time") or "?"
+            added = (item.get("added_at") or item.get("created_at") or "")[:10]
+            items_context.append(
+                f"[{i}] \"{item.get('title', 'Untitled')}\" | Tags: {tags} | Priority: {priority} | Time: {read_time}min | Added: {added} | Summary: {summary}"
+            )
+            
+        prompt = f"""You are a smart queue assistant. Pick the SINGLE best next item to read/watch.
+
+User's interests (from completed items): {tags_context}
+
+Available items:
+{chr(10).join(items_context)}
+
+Score each item considering:
+1. Relevance to user interests (tag overlap)
+2. Priority score (higher = more important)
+3. Freshness (recently added preferred)
+4. Reasonable time commitment
+5. Summary quality/interest
+
+Return ONLY JSON:
+{{"index": 0, "reason": "brief 10-15 word reason"}}
+"""
+        try:
+            raw_text = self._call_generative_model(prompt, 0)
+            text = self._clean_json_response(raw_text)
+            result = json.loads(text)
+            
+            idx = result.get("index", 0)
+            if not isinstance(idx, int) or idx < 0 or idx >= len(unread_items):
+                idx = 0
+            
+            chosen = unread_items[idx]
+            reason = result.get("reason", "Best match for your interests")
+            
+            return {
+                "item_id": chosen.get("id"),
+                "title": chosen.get("title", "Untitled"),
+                "reason": str(reason)
+            }
+
+        except Exception as e:
+            logger.error(f"Recommendations failed: {e}")
+            best = max(unread_items, key=lambda x: x.get("priority_score", 0))
+            return {
+                "item_id": best.get("id"),
+                "title": best.get("title", "Untitled"),
+                "reason": f"Highest priority item (score: {best.get('priority_score', 50)})"
+            }
+    
+    def calculate_priority(
+        self,
+        title: str,
+        summary: Optional[str],
+        tags: List[str],
+        source_type: str,
+        estimated_time: Optional[int],
+        days_since_added: int,
+        user_interests: Optional[List[str]] = None
+    ) -> float:
+        """
+        Calculate priority score between 0 and 100.
+        Uses rule-based scoring (fast, reliable, no extra API call).
+        """
+        score = 50.0
+        
+        # Factor 1: Freshness (25 points max)
+        if days_since_added <= 1:
+            score += 25
+        elif days_since_added <= 3:
+            score += 20
+        elif days_since_added <= 7:
+            score += 12
+        elif days_since_added <= 14:
+            score += 5
+        else:
+            score -= 15
+        
+        # Factor 2: Content quality tags (20 points max)
+        quality_tags = ["tutorial", "guide", "documentation", "course", "deep-dive", "explained", "how-to"]
+        matching_quality = len(set(tags) & set(quality_tags))
+        score += min(matching_quality * 5, 20)
+        
+        # Factor 3: Time sweet spot - 3 to 15 minutes (15 points max)
+        if estimated_time:
+            if 180 <= estimated_time <= 900:
+                score += 15
+            elif 60 <= estimated_time <= 180:
+                score += 10
+            elif estimated_time <= 60:
+                score += 5
+            elif estimated_time > 3600:
+                score -= 10
+        
+        # Factor 4: Content type bonus (10 points max)
+        type_bonus = {
+            "youtube": 5,
+            "article": 3,
+            "github": 8,
+            "twitter": 2,
+            "reddit": 4,
+        }
+        score += type_bonus.get(source_type, 0)
+        
+        # Factor 5: Has summary bonus (5 points)
+        if summary and len(summary) > 20:
+            score += 5
+        
+        # Factor 6: User interest match (15 points max)
+        if user_interests and tags:
+            matching = len(set(tags) & set(user_interests))
+            score += min(matching * 4, 15)
+        
+        # Factor 7: Has useful tags (10 points)
+        if len(tags) >= 3:
+            score += 10
+        elif len(tags) >= 1:
+            score += 5
+        
+        return round(min(max(score, 0), 100), 1)
+    def generate_embedding(self, text: str) -> Optional[List[float]]:
+        """Generate vector embedding for the text using Google Gemini API."""
+        if not text or not text.strip():
+            return None
+        
+        if not self.enabled:
+            return None
+            
+        try:
+            response = genai.embed_content(
+                model="models/gemini-embedding-001",
+                content=text,
+                task_type="retrieval_document"
+            )
+            embedding = response.get("embedding")
+            if embedding:
+                logger.info(f"Successfully generated embedding of length {len(embedding)}")
+                print(f"[PIPELINE LOG] [Embedding] Generated embedding of length {len(embedding)}")
+                return embedding
+        except Exception as e:
+            logger.warning(f"Failed to generate embedding: {e}")
+            print(f"[PIPELINE LOG] [Embedding] Failed to generate embedding: {e}")
+            
+        return None
+
+    def get_user_interests_from_history(self, completed_tags: List[str]) -> List[str]:
+        """Extract top interests from completed items' tags."""
+        if not completed_tags:
+            return []
+        
+        # Count tag frequency
+        tag_counts = {}
+        for tag in completed_tags:
+            if tag != "uncategorized":
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        
+        # Return top 10 most frequent tags
+        sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+        return [tag for tag, count in sorted_tags[:10]]
+
+
+# Global instance
+_ai_service_instance: Optional[AIService] = None
+
+def get_ai_service() -> AIService:
+    """Get or create AI service singleton."""
+    global _ai_service_instance
+    if _ai_service_instance is None:
+        from config import GEMINI_API_KEY
+        _ai_service_instance = AIService(GEMINI_API_KEY)
+    return _ai_service_instance

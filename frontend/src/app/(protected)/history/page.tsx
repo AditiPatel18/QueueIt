@@ -19,9 +19,13 @@ import {
   User,
   ChevronDownIcon,
   ArrowLeftIcon,
+  CheckCircle2,
+  Clock,
+  Flame,
 } from "lucide-react";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { QueueList } from "@/components/queue-list";
+import { useHistoryStats } from "@/hooks/use-swr-queries";
 import Link from "next/link";
 
 export default function HistoryPage() {
@@ -29,6 +33,7 @@ export default function HistoryPage() {
   const [user, setUser] = useState<SupabaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
+  const { stats, isLoading: statsLoading } = useHistoryStats();
 
   useEffect(() => {
     const getUser = async () => {
@@ -102,6 +107,16 @@ export default function HistoryPage() {
               </Button>
             </Link>
 
+            <Link href="/analytics">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground cursor-pointer"
+              >
+                Analytics
+              </Button>
+            </Link>
+
             {user && (
               <DropdownMenu>
                 <DropdownMenuTrigger
@@ -125,10 +140,12 @@ export default function HistoryPage() {
                     <p className="text-xs text-muted-foreground">{user.email}</p>
                   </div>
                   <DropdownMenuSeparator className="bg-border/30" />
-                  <DropdownMenuItem className="cursor-pointer">
-                    <User className="mr-2 h-4 w-4" />
-                    Profile
-                  </DropdownMenuItem>
+                  <Link href="/profile">
+                    <DropdownMenuItem className="cursor-pointer">
+                      <User className="mr-2 h-4 w-4" />
+                      Profile
+                    </DropdownMenuItem>
+                  </Link>
                   <DropdownMenuSeparator className="bg-border/30" />
                   <DropdownMenuItem
                     className="cursor-pointer text-destructive focus:text-destructive"
@@ -151,7 +168,7 @@ export default function HistoryPage() {
 
       {/* Main content */}
       <main className="relative z-10 mx-auto max-w-7xl px-6 py-12">
-        <div className="mb-10">
+        <div className="mb-8">
           <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
             History
           </h1>
@@ -160,8 +177,57 @@ export default function HistoryPage() {
           </p>
         </div>
 
+        {/* Stats Grid */}
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-10">
+          <div className="p-5 rounded-2xl glass border border-border/10 flex items-center gap-4 bg-secondary/5">
+            <div className="h-10 w-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+              <CheckCircle2 className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Completed Items</p>
+              <h3 className="text-2xl font-bold mt-0.5">{statsLoading ? "..." : stats.items_completed}</h3>
+            </div>
+          </div>
+
+          <div className="p-5 rounded-2xl glass border border-border/10 flex items-center gap-4 bg-secondary/5">
+            <div className="h-10 w-10 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center">
+              <Clock className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Time Consumed</p>
+              <h3 className="text-2xl font-bold mt-0.5">
+                {statsLoading ? "..." : `${Math.ceil(stats.total_time_consumed)}m`}
+              </h3>
+            </div>
+          </div>
+
+          <div className="p-5 rounded-2xl glass border border-border/10 flex items-center gap-4 bg-secondary/5">
+            <div className="h-10 w-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center">
+              <Flame className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Completion Streak</p>
+              <h3 className="text-2xl font-bold mt-0.5">
+                {statsLoading ? "..." : `${stats.completion_streak} days`}
+              </h3>
+            </div>
+          </div>
+
+          <div className="p-5 rounded-2xl glass border border-border/10 flex items-center gap-4 bg-secondary/5">
+            <div className="h-10 w-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center">
+              <LayersIcon className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Top Category</p>
+              <h3 className="text-sm font-bold mt-0.5 truncate max-w-[150px]">
+                {statsLoading ? "..." : (stats.top_categories?.[0]?.category ? `${stats.top_categories[0].category.toUpperCase()} (${stats.top_categories[0].count})` : "None")}
+              </h3>
+            </div>
+          </div>
+        </div>
+
         {/* History list */}
-        <QueueList initialStatusFilter="completed" />
+        <QueueList initialStatusFilter="completed" isHistoryView={true} />
       </main>
     </div>
   );

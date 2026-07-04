@@ -13,12 +13,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
+import { useCollections } from "@/hooks/use-swr-queries";
 import {
   LinkIcon,
   Loader2,
   Sparkles,
   CheckCircle2,
   AlertCircleIcon,
+  FolderOpen,
 } from "lucide-react";
 
 interface AddItemDialogProps {
@@ -36,16 +38,16 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
   const [savedTitle, setSavedTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus input when dialog opens
-  useEffect(() => {
-    if (open) {
-      setState("idle");
-      setUrl("");
-      setErrorMessage("");
-      setSavedTitle("");
-      setTimeout(() => inputRef.current?.focus(), 100);
-    }
-  }, [open]);
+  // Collections and AI suggestion states
+  const { collections, mutateCollections } = useCollections();
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestedCollection, setSuggestedCollection] = useState<{
+    suggested_collection_id: string | null;
+    name: string;
+    color: string;
+    is_new: boolean;
+  } | null>(null);
 
   const isValidUrl = (text: string) => {
     try {
@@ -55,6 +57,66 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
       return false;
     }
   };
+
+  // Focus input and reset states when dialog opens
+  useEffect(() => {
+    if (open) {
+      setState("idle");
+      setUrl("");
+      setErrorMessage("");
+      setSavedTitle("");
+      setSelectedCollectionId(null);
+      setSuggestedCollection(null);
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [open]);
+
+  // Fetch AI suggestion when URL is valid
+  useEffect(() => {
+    const trimmed = url.trim();
+    if (!trimmed || !isValidUrl(trimmed)) {
+      setSuggestedCollection(null);
+      setSelectedCollectionId(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setSuggesting(true);
+      try {
+        const supabase = createClient();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session?.access_token) return;
+
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const response = await fetch(`${API_URL}/api/items/suggest-collection`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ url: trimmed }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setSuggestedCollection(data);
+          if (data.suggested_collection_id) {
+            setSelectedCollectionId(data.suggested_collection_id);
+          } else {
+            setSelectedCollectionId("suggested-new");
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch suggested collection:", err);
+      } finally {
+        setSuggesting(false);
+      }
+    }, 600); // 600ms debounce to prevent API spam while typing
+
+    return () => clearTimeout(timer);
+  }, [url]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,7 +142,16 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
         return;
       }
 
-      const requestBody = { url: url.trim() };
+      const requestBody: any = { url: url.trim() };
+      if (selectedCollectionId) {
+        if (selectedCollectionId === "suggested-new" && suggestedCollection) {
+          requestBody.suggested_collection_name = suggestedCollection.name;
+          requestBody.suggested_collection_color = suggestedCollection.color;
+        } else {
+          requestBody.collection_id = selectedCollectionId;
+        }
+      }
+
       const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       const requestUrl = `${API_URL}/api/items`;
 
@@ -201,6 +272,46 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
                 }`}
               />
             </div>
+
+            {isValidUrl(url) && (
+              <div className="space-y-1.5 animate-in fade-in-0 duration-200">
+                <label className="text-xs text-muted-foreground font-semibold flex justify-between items-center">
+                  <span className="flex items-center gap-1">
+                    <FolderOpen className="h-3.5 w-3.5 text-primary/80" /> Save to Folder / Collection
+                  </span>
+                  {suggesting && (
+                    <span className="text-[10px] text-primary flex items-center gap-1 animate-pulse">
+                      <Loader2 className="h-3 w-3 animate-spin" /> AI suggesting...
+                    </span>
+                  )}
+                </label>
+                <select
+                  value={selectedCollectionId || ""}
+                  onChange={(e) => setSelectedCollectionId(e.target.value || null)}
+                  disabled={state === "extracting"}
+                  className="w-full h-10 px-3 rounded-md bg-secondary/50 border border-border/30 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50 transition-all cursor-pointer text-foreground font-medium"
+                >
+                  <option value="" className="bg-background text-foreground">None (Uncategorized)</option>
+                  
+                  {suggestedCollection && (
+                    <option
+                      value={suggestedCollection.suggested_collection_id || "suggested-new"}
+                      className="bg-background text-primary font-semibold"
+                    >
+                      ✨ AI Suggestion: {suggestedCollection.name} {suggestedCollection.is_new ? "(New folder)" : ""}
+                    </option>
+                  )}
+                  
+                  {collections.map((col) => (
+                    suggestedCollection?.suggested_collection_id === col.id ? null : (
+                      <option key={col.id} value={col.id} className="bg-background text-foreground">
+                        {col.name}
+                      </option>
+                    )
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Error message */}
             {state === "error" && errorMessage && (
