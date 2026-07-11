@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -27,14 +27,36 @@ import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { AddItemDialog } from "@/components/add-item-dialog";
 import { QueueList } from "@/components/queue-list";
 import { CollectionsSidebar } from "@/components/collections-sidebar";
+import { RemindersPopover } from "@/components/reminders-popover";
+import { toast } from "sonner";
+import { getItem } from "@/lib/api";
 
 
-export default function DashboardPage() {
+function DashboardContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Support both ?item= (reminder emails) and ?item_id= (legacy deep-links)
+  const queryItemId = searchParams?.get("item") || searchParams?.get("item_id");
   const [user, setUser] = useState<SupabaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
+
+  // Verify deep-linked item existence and show toast if missing
+  useEffect(() => {
+    if (queryItemId) {
+      const verifyItem = async () => {
+        try {
+          await getItem(queryItemId);
+        } catch (err) {
+          console.error("Error verifying deep linked item:", err);
+          toast.error("Item not found. Redirecting to your dashboard.");
+          router.replace("/dashboard");
+        }
+      };
+      verifyItem();
+    }
+  }, [queryItemId, router]);
 
   // Folders filtering state
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
@@ -134,6 +156,8 @@ export default function DashboardPage() {
                 Analytics
               </Button>
             </Link>
+
+            <RemindersPopover />
 
             <AddItemDialog
               trigger={
@@ -266,5 +290,17 @@ export default function DashboardPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    }>
+      <DashboardContent />
+    </Suspense>
   );
 }

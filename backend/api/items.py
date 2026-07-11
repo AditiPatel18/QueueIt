@@ -3036,3 +3036,13 @@ async def export_reading_analytics(user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Failed to export reading analytics: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/user/streak-heatmap")
+async def get_user_streak_heatmap(user: dict = Depends(get_current_user)):
+    user_id = user.get("id") or user.get("sub")
+    try:
+        from services.streak_service import StreakService
+        return StreakService.get_streak_heatmap(user_id)
+    except Exception as e:
+        logger.error(f"Failed to get streak heatmap: {e}")
+        raise HTTPException(status_code=400, detail=str(e))

@@ -173,6 +173,99 @@ class SchemaFallbackManager:
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_user_id ON local_item_embeddings(user_id)")
+
+            # Local reminder settings table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS local_reminder_settings (
+                    user_id TEXT PRIMARY KEY,
+                    enabled INTEGER DEFAULT 1,
+                    reminder_time TEXT DEFAULT '09:00',
+                    snoozed_until TEXT,
+                    last_reminded_at TEXT
+                )
+            """)
+
+            # Run settings migrations
+            for col_def in [
+                ("frequency", "TEXT DEFAULT 'daily'"),
+                ("custom_days", "TEXT DEFAULT ''"),
+                ("timezone", "TEXT DEFAULT 'UTC'"),
+                ("browser_notifications", "INTEGER DEFAULT 1"),
+                ("email_reminders", "INTEGER DEFAULT 1"),
+                ("sms_reminders", "INTEGER DEFAULT 0"),
+                ("phone_number", "TEXT DEFAULT ''"),
+                ("email_address", "TEXT DEFAULT ''"),
+                ("last_sent_date", "TEXT")
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE local_reminder_settings ADD COLUMN {col_def[0]} {col_def[1]}")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Local user gamification table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS local_user_gamification (
+                    user_id TEXT PRIMARY KEY,
+                    xp INTEGER DEFAULT 0,
+                    level INTEGER DEFAULT 1,
+                    streak_freezes_available INTEGER DEFAULT 1,
+                    last_freeze_used_at TEXT,
+                    last_freeze_granted_at TEXT,
+                    daily_goal INTEGER DEFAULT 15,
+                    current_streak INTEGER DEFAULT 0,
+                    longest_streak INTEGER DEFAULT 0,
+                    last_activity_date TEXT
+                )
+            """)
+
+            # Run gamification table migrations
+            for col_def in [
+                ("last_freeze_granted_at", "TEXT")
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE local_user_gamification ADD COLUMN {col_def[0]} {col_def[1]}")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Local streak calendar table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS local_streak_calendar (
+                    user_id TEXT,
+                    activity_date TEXT,
+                    xp_earned INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, activity_date)
+                )
+            """)
+
+            # Local reminder history table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS local_reminder_history (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    item_id TEXT,
+                    title TEXT,
+                    scheduled_time TEXT,
+                    sent_at TEXT,
+                    status TEXT,
+                    channel TEXT,
+                    completed_at TEXT
+                )
+            """)
+
+            # Run history migrations
+            for col_def in [
+                ("retry_count", "INTEGER DEFAULT 0"),
+                ("error_message", "TEXT DEFAULT ''"),
+                ("delivery_logs", "TEXT DEFAULT ''")
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE local_reminder_history ADD COLUMN {col_def[0]} {col_def[1]}")
+                except sqlite3.OperationalError:
+                    pass
+            
+            # Create indexes for performance optimization
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_reminder_history_user_status ON local_reminder_history(user_id, status, sent_at)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_streak_calendar_user ON local_streak_calendar(user_id)")
             
             conn.commit()
             self.initialized = True

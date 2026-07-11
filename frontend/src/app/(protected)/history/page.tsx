@@ -27,6 +27,7 @@ import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { QueueList } from "@/components/queue-list";
 import { useHistoryStats } from "@/hooks/use-swr-queries";
 import Link from "next/link";
+import { RemindersPopover } from "@/components/reminders-popover";
 
 export default function HistoryPage() {
   const router = useRouter();
@@ -116,6 +117,9 @@ export default function HistoryPage() {
                 Analytics
               </Button>
             </Link>
+
+            <RemindersPopover />
+
 
             {user && (
               <DropdownMenu>

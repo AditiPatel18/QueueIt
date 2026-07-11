@@ -32,7 +32,112 @@ import {
   TrendingUp,
 } from "lucide-react";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
-import { useReadingAnalytics } from "@/hooks/use-swr-queries";
+import { useReadingAnalytics, useStreakHeatmap } from "@/hooks/use-swr-queries";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Format a YYYY-MM-DD string as a locale date string */
+function fmtDate(dateStr: string) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+/** YYYY-MM-DD of today in local time */
+function todayLocal(): string {
+  const t = new Date();
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Heatmap cell color by intensity bucket (0-4)
+// ---------------------------------------------------------------------------
+function heatColor(count: number): string {
+  if (count === 0) return "bg-[oklch(0.3_0_0)] border-[oklch(0.35_0_0)]"; // empty
+  if (count === 1) return "bg-[oklch(0.45_0.18_270)] border-[oklch(0.5_0.18_270)]";
+  if (count === 2) return "bg-[oklch(0.55_0.22_270)] border-[oklch(0.6_0.22_270)]";
+  if (count === 3) return "bg-[oklch(0.65_0.25_270)] border-[oklch(0.7_0.25_270)]";
+  return "bg-[oklch(0.75_0.28_270)] border-[oklch(0.78_0.28_270)]"; // 4+
+}
+
+// ---------------------------------------------------------------------------
+// Build 53-week heatmap grid (GitHub style)
+// Returns: columns array where each column = 1 week (Sun–Sat)
+// ---------------------------------------------------------------------------
+function buildHeatmapGrid(dailyCounts: Record<string, number>) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Start from the Sunday of the week that was 52 weeks ago
+  const startDate = new Date(today);
+  startDate.setDate(today.getDate() - 52 * 7);
+  // Rewind to the Sunday of that week
+  startDate.setDate(startDate.getDate() - startDate.getDay());
+
+  const todayStr = todayLocal();
+
+  const columns: {
+    weekIndex: number;
+    monthLabel: string | null; // only set on first week of a month
+    days: {
+      dateStr: string;
+      count: number;
+      label: string;
+      isToday: boolean;
+      isFuture: boolean;
+    }[];
+  }[] = [];
+
+  let prevMonth = -1;
+  const cur = new Date(startDate);
+
+  for (let w = 0; w < 53; w++) {
+    const days = [];
+    let monthLabel: string | null = null;
+
+    for (let d = 0; d < 7; d++) {
+      const y = cur.getFullYear();
+      const mo = cur.getMonth();
+      const day = cur.getDate();
+      const dateStr = `${y}-${String(mo + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+      // First day of a new month → emit month label on this column
+      if (day === 1 || (w === 0 && d === 0)) {
+        const m = cur.getMonth();
+        if (m !== prevMonth) {
+          monthLabel = cur.toLocaleDateString(undefined, { month: "short" });
+          prevMonth = m;
+        }
+      }
+
+      const isFuture = cur > today;
+      const count = isFuture ? 0 : (dailyCounts[dateStr] ?? 0);
+
+      days.push({
+        dateStr,
+        count,
+        label: fmtDate(dateStr),
+        isToday: dateStr === todayStr,
+        isFuture,
+      });
+
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    columns.push({ weekIndex: w, monthLabel, days });
+  }
+
+  return columns;
+}
+
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
 
 export default function AnalyticsPage() {
   const router = useRouter();
@@ -41,11 +146,19 @@ export default function AnalyticsPage() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  // Chart view states
+  // Tooltip state for heatmap
+  const [tooltip, setTooltip] = useState<{
+    text: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Chart controls
   const [intervalType, setIntervalType] = useState<"daily" | "weekly" | "monthly">("daily");
-  const [metricType, setMetricType] = useState<"time" | "completions">("time");
+  const [metricType, setMetricType] = useState<"time" | "completions">("completions");
 
   const { analytics, isLoading: analyticsLoading, error: analyticsError } = useReadingAnalytics();
+  const { streakData } = useStreakHeatmap();
 
   useEffect(() => {
     const getUser = async () => {
@@ -119,85 +232,55 @@ export default function AnalyticsPage() {
     return user.user_metadata?.full_name || user.email?.split("@")[0] || "User";
   };
 
-  // 1. Process grid coordinates for reading streak calendar (past 26 weeks / 182 days)
-  const streakCalendarGrid = useMemo(() => {
-    if (!analytics?.streak?.completed_dates) return [];
-    
-    const completedSet = new Set(analytics.streak.completed_dates);
-    
-    // Map dates to daily completion count
-    const dailyCompletionsMap: Record<string, number> = {};
-    if (analytics.charts?.daily) {
-      analytics.charts.daily.forEach((day) => {
-        dailyCompletionsMap[day.date] = day.completions || 0;
+  // ---- Heatmap ----
+  const dailyCompletionCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (streakData?.daily_activity) {
+      streakData.daily_activity.forEach((item: { date: string; count: number }) => {
+        counts[item.date] = item.count;
       });
     }
+    return counts;
+  }, [streakData]);
 
-    const today = new Date();
-    // Align grid to start from Sunday 26 weeks ago
-    const startDate = new Date();
-    startDate.setDate(today.getDate() - 180);
-    const dayOfWeek = startDate.getDay();
-    startDate.setDate(startDate.getDate() - dayOfWeek); // Go back to Sunday
+  const heatmapColumns = useMemo(
+    () => buildHeatmapGrid(dailyCompletionCounts),
+    [dailyCompletionCounts]
+  );
 
-    const grid = [];
-    const tempDate = new Date(startDate);
+  const currentStreak = streakData?.current_streak ?? 0;
+  const longestStreak = streakData?.longest_streak ?? 0;
 
-    // Render 26 columns of 7 rows (weeks * days)
-    for (let i = 0; i < 182; i++) {
-      const year = tempDate.getFullYear();
-      const month = String(tempDate.getMonth() + 1).padStart(2, "0");
-      const dateVal = String(tempDate.getDate()).padStart(2, "0");
-      const dateStr = `${year}-${month}-${dateVal}`;
-
-      const completed = completedSet.has(dateStr);
-      const count = dailyCompletionsMap[dateStr] || (completed ? 1 : 0);
-
-      grid.push({
-        dateStr,
-        completed,
-        count,
-        label: tempDate.toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-        }),
-      });
-
-      tempDate.setDate(tempDate.getDate() + 1);
-    }
-    return grid;
-  }, [analytics]);
-
-  // 2. Fetch current chart metrics
+  // ---- Chart data (original mapping — matches backend chart shapes exactly) ----
   const activeChartData = useMemo(() => {
     if (!analytics?.charts) return [];
-    
-    const rawData = analytics.charts[intervalType] || [];
-    
+
     if (intervalType === "daily") {
-      return rawData.map((d: any) => ({
+      return (analytics.charts.daily || []).map((d: any) => ({
         label: new Date(d.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
         value: metricType === "time" ? d.minutes : d.completions,
         rawDate: d.date,
       }));
-    } else if (intervalType === "weekly") {
-      return rawData.map((d: any) => ({
+    }
+
+    if (intervalType === "weekly") {
+      return (analytics.charts.weekly || []).map((d: any) => ({
         label: `Wk ${new Date(d.week_start).toLocaleDateString(undefined, { month: "numeric", day: "numeric" })}`,
         value: metricType === "time" ? d.minutes : d.completions,
         rawDate: d.week_start,
       }));
-    } else {
-      return rawData.map((d: any) => {
-        const [y, m] = d.month.split("-");
-        const date = new Date(parseInt(y), parseInt(m) - 1, 1);
-        return {
-          label: date.toLocaleDateString(undefined, { month: "short", year: "2-digit" }),
-          value: metricType === "time" ? d.minutes : d.completions,
-          rawDate: d.month,
-        };
-      });
     }
+
+    // monthly
+    return (analytics.charts.monthly || []).map((d: any) => {
+      const [y, m] = d.month.split("-");
+      const date = new Date(parseInt(y), parseInt(m) - 1, 1);
+      return {
+        label: date.toLocaleDateString(undefined, { month: "short", year: "2-digit" }),
+        value: metricType === "time" ? d.minutes : d.completions,
+        rawDate: d.month,
+      };
+    });
   }, [analytics, intervalType, metricType]);
 
   const maxChartValue = useMemo(() => {
@@ -205,12 +288,12 @@ export default function AnalyticsPage() {
     return Math.max(...vals, 1);
   }, [activeChartData]);
 
-  // 3. Circular dashboard stroke computation
+  // ---- Productivity ring ----
   const scoreRingOffset = useMemo(() => {
     const score = analytics?.productivity_score || 0;
-    const radius = 50;
-    const circumference = 2 * Math.PI * radius;
-    return circumference - (score / 100) * circumference;
+    const r = 40;
+    const circ = 2 * Math.PI * r;
+    return circ - (score / 100) * circ;
   }, [analytics]);
 
   if (loading || analyticsLoading) {
@@ -242,7 +325,6 @@ export default function AnalyticsPage() {
     top_ai_topics = [],
   } = analytics;
 
-  // Custom feedback text based on score
   const getProductivityFeedback = (score: number) => {
     if (score >= 85) return { label: "Master Reader", desc: "Superb daily focus! You maintain perfect consistency.", color: "text-emerald-400" };
     if (score >= 70) return { label: "Focused Scholar", desc: "Solid progress. Keep meeting your daily targets!", color: "text-primary" };
@@ -252,15 +334,18 @@ export default function AnalyticsPage() {
 
   const feedback = getProductivityFeedback(productivity_score);
 
+  // Day-of-week labels (only Sun/Mon/Wed/Fri to save space like GitHub)
+  const DOW_LABELS = ["Sun", "", "Mon", "", "Wed", "", "Fri", ""];
+
   return (
     <div className="relative min-h-screen bg-background">
-      {/* Background effects */}
+      {/* Background blobs */}
       <div className="pointer-events-none fixed inset-0">
         <div className="absolute -top-40 -left-40 h-[400px] w-[400px] rounded-full bg-[oklch(0.5_0.2_270_/_8%)] blur-[120px]" />
         <div className="absolute -bottom-40 -right-40 h-[400px] w-[400px] rounded-full bg-[oklch(0.45_0.18_300_/_6%)] blur-[120px]" />
       </div>
 
-      {/* Navigation */}
+      {/* Nav */}
       <nav className="relative z-10 border-b border-border/30 glass">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2">
@@ -341,10 +426,10 @@ export default function AnalyticsPage() {
         </div>
       </nav>
 
-      {/* Main content */}
+      {/* Main */}
       <main className="relative z-10 mx-auto max-w-7xl px-6 py-12 space-y-8">
-        
-        {/* Header section */}
+
+        {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/10 pb-6">
           <div>
             <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
@@ -371,17 +456,15 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* 1. Quick Stats & Productivity Circle */}
+        {/* 1. Quick Stats */}
         <div className="grid gap-6 md:grid-cols-4">
-          
-          {/* Card: Daily reading time */}
+
+          {/* Daily */}
           <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between relative overflow-hidden">
             <div className="absolute -top-10 -right-10 w-28 h-28 bg-primary/10 rounded-full blur-xl pointer-events-none" />
             <div className="flex justify-between items-start">
               <div>
-                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">
-                  Today
-                </span>
+                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">Today</span>
                 <h3 className="text-base font-bold text-foreground">Reading Time</h3>
               </div>
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 border border-primary/20">
@@ -389,9 +472,7 @@ export default function AnalyticsPage() {
               </div>
             </div>
             <div className="my-4 flex items-baseline gap-1.5">
-              <span className="text-3xl font-extrabold tracking-tight text-primary">
-                {reading_time.daily}
-              </span>
+              <span className="text-3xl font-extrabold tracking-tight text-primary">{reading_time.daily}</span>
               <span className="text-xs text-muted-foreground font-semibold">min</span>
             </div>
             <div className="border-t border-border/10 pt-3 text-xs text-muted-foreground flex justify-between items-center">
@@ -400,7 +481,6 @@ export default function AnalyticsPage() {
                 {Math.min(100, Math.round((reading_time.daily / reading_time.daily_goal) * 100))}%
               </span>
             </div>
-            {/* Linear Progress bar */}
             <div className="mt-2 w-full h-1 bg-border/20 rounded-full overflow-hidden">
               <div
                 style={{ width: `${Math.min(100, (reading_time.daily / reading_time.daily_goal) * 100)}%` }}
@@ -409,14 +489,12 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
-          {/* Card: Weekly reading time */}
+          {/* Weekly */}
           <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between relative overflow-hidden">
             <div className="absolute -top-10 -right-10 w-28 h-28 bg-emerald-500/10 rounded-full blur-xl pointer-events-none" />
             <div className="flex justify-between items-start">
               <div>
-                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">
-                  Weekly
-                </span>
+                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">Weekly</span>
                 <h3 className="text-base font-bold text-foreground">Reading Time</h3>
               </div>
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20">
@@ -424,9 +502,7 @@ export default function AnalyticsPage() {
               </div>
             </div>
             <div className="my-4 flex items-baseline gap-1.5">
-              <span className="text-3xl font-extrabold tracking-tight text-emerald-400">
-                {reading_time.weekly}
-              </span>
+              <span className="text-3xl font-extrabold tracking-tight text-emerald-400">{reading_time.weekly}</span>
               <span className="text-xs text-muted-foreground font-semibold">min</span>
             </div>
             <div className="border-t border-border/10 pt-3 text-xs text-muted-foreground">
@@ -434,14 +510,12 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
-          {/* Card: Monthly reading time */}
+          {/* Monthly */}
           <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between relative overflow-hidden">
             <div className="absolute -top-10 -right-10 w-28 h-28 bg-violet-500/10 rounded-full blur-xl pointer-events-none" />
             <div className="flex justify-between items-start">
               <div>
-                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">
-                  Monthly
-                </span>
+                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">Monthly</span>
                 <h3 className="text-base font-bold text-foreground">Reading Time</h3>
               </div>
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-500/10 border border-violet-500/20">
@@ -449,38 +523,26 @@ export default function AnalyticsPage() {
               </div>
             </div>
             <div className="my-4 flex items-baseline gap-1.5">
-              <span className="text-3xl font-extrabold tracking-tight text-violet-400">
-                {reading_time.monthly}
-              </span>
+              <span className="text-3xl font-extrabold tracking-tight text-violet-400">{reading_time.monthly}</span>
               <span className="text-xs text-muted-foreground font-semibold">min</span>
             </div>
             <div className="border-t border-border/10 pt-3 text-xs text-muted-foreground">
-              Estimated completions: <span className="font-bold text-foreground">{Math.round(reading_time.monthly / Math.max(1, average_completion_time))} items</span>
+              Est. <span className="font-bold text-foreground">{Math.round(reading_time.monthly / Math.max(1, average_completion_time))} items</span> completed
             </div>
           </div>
 
-          {/* Card: Productivity score */}
+          {/* Productivity Score */}
           <div className="glass p-6 rounded-2xl border border-border/15 flex items-center gap-4 relative overflow-hidden">
-            {/* Radial progress score */}
             <div className="relative flex-shrink-0 flex items-center justify-center h-24 w-24">
               <svg className="w-full h-full transform -rotate-90">
+                <circle cx="48" cy="48" r="40" className="stroke-border/25" strokeWidth="8" fill="transparent" />
                 <circle
-                  cx="48"
-                  cy="48"
-                  r="40"
-                  className="stroke-border/25"
-                  strokeWidth="8"
-                  fill="transparent"
-                />
-                <circle
-                  cx="48"
-                  cy="48"
-                  r="40"
-                  className="stroke-primary shadow-sm"
+                  cx="48" cy="48" r="40"
+                  className="stroke-primary"
                   strokeWidth="8"
                   fill="transparent"
                   strokeDasharray={`${2 * Math.PI * 40}`}
-                  strokeDashoffset={`${2 * Math.PI * 40 - (productivity_score / 100) * (2 * Math.PI * 40)}`}
+                  strokeDashoffset={scoreRingOffset}
                   strokeLinecap="round"
                 />
               </svg>
@@ -489,11 +551,8 @@ export default function AnalyticsPage() {
                 <span className="text-[8px] text-muted-foreground font-bold tracking-wider uppercase">Score</span>
               </div>
             </div>
-
             <div className="flex-1 space-y-1">
-              <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block">
-                Focus level
-              </span>
+              <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block">Focus level</span>
               <h3 className={`text-sm font-bold ${feedback.color}`}>{feedback.label}</h3>
               <p className="text-[10px] leading-snug text-muted-foreground">{feedback.desc}</p>
             </div>
@@ -501,96 +560,135 @@ export default function AnalyticsPage() {
 
         </div>
 
-        {/* 2. Reading Streak Calendar */}
-        <div className="glass p-6 rounded-2xl border border-border/15">
-          <div className="flex justify-between items-center mb-6">
+        {/* 2. Reading Streak Heatmap — GitHub / LeetCode style */}
+        <div className="glass p-6 rounded-2xl border border-border/15 relative overflow-hidden">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
             <div className="flex items-center gap-2">
-              <Flame className="h-5 w-5 text-orange-500" />
+              <Flame className="h-5 w-5 text-orange-500 shrink-0" />
               <div>
                 <h3 className="text-base font-bold text-foreground">Reading Streak Calendar</h3>
                 <p className="text-[10px] text-muted-foreground leading-normal">
-                  Your daily completed content footprint over the past 6 months (180 days).
+                  Daily completed content over the past year — built from{" "}
+                  <span className="font-semibold">completed_at</span> timestamps.
                 </p>
               </div>
             </div>
-            <div className="flex gap-4 text-xs font-semibold text-muted-foreground">
+            <div className="flex gap-5 text-xs font-semibold text-muted-foreground shrink-0">
               <div>
-                Current Streak: <span className="font-bold text-orange-400">{streak.current} days</span>
+                Current:{" "}
+                <span className="font-bold text-orange-400">{currentStreak} day{currentStreak !== 1 ? "s" : ""}</span>
               </div>
               <div>
-                Longest Streak: <span className="font-bold text-foreground">{streak.longest} days</span>
+                Longest:{" "}
+                <span className="font-bold text-foreground">{longestStreak} day{longestStreak !== 1 ? "s" : ""}</span>
               </div>
             </div>
           </div>
 
-          {/* GitHub-like contribution grid */}
-          <div className="w-full overflow-x-auto pb-2 scrollbar-none">
-            <div className="flex gap-1.5 w-max">
-              {/* Day names list */}
-              <div className="flex flex-col justify-between text-[8px] text-muted-foreground py-1 select-none pr-1">
-                <span>Sun</span>
-                <span>Tue</span>
-                <span>Thu</span>
-                <span>Sat</span>
+          {/* Grid */}
+          <div className="w-full overflow-x-auto pb-2 scrollbar-none select-none">
+            <div className="inline-flex gap-0 min-w-max">
+              {/* Day-of-week labels column */}
+              <div className="flex flex-col mr-1.5 mt-6">
+                {["S", "", "M", "", "W", "", "F", ""].slice(0, 7).map((lbl, i) => (
+                  <div
+                    key={i}
+                    className="h-[13px] flex items-center text-[8px] text-muted-foreground font-medium w-4 mb-[2px]"
+                  >
+                    {lbl}
+                  </div>
+                ))}
               </div>
 
-              {/* Grid block container */}
-              <div className="grid grid-flow-col grid-rows-7 gap-1">
-                {streakCalendarGrid.map((day, idx) => {
-                  // Color scale depending on count
-                  let colorClass = "bg-border/20 hover:scale-125 hover:border-foreground/30 border border-transparent";
-                  if (day.count === 1) colorClass = "bg-primary/35 hover:scale-125 hover:border-primary/60 border border-transparent cursor-help";
-                  if (day.count === 2) colorClass = "bg-primary/70 hover:scale-125 hover:border-primary border border-transparent cursor-help";
-                  if (day.count >= 3) colorClass = "bg-primary hover:scale-125 hover:border-primary border border-transparent cursor-help";
+              {/* Week columns */}
+              <div className="flex flex-col">
+                {/* Month labels row */}
+                <div className="flex mb-1 h-5">
+                  {heatmapColumns.map((col) => (
+                    <div key={col.weekIndex} className="w-[13px] mr-[2px] text-[8px] text-muted-foreground font-medium truncate">
+                      {col.monthLabel ?? ""}
+                    </div>
+                  ))}
+                </div>
 
-                  return (
-                    <div
-                      key={idx}
-                      className={`w-3.5 h-3.5 rounded-[2px] transition-all duration-300 ${colorClass}`}
-                      title={`${day.label}: ${day.count} ${day.count === 1 ? 'item' : 'items'} completed`}
-                    />
-                  );
-                })}
+                {/* Day cells */}
+                <div className="flex gap-[2px]">
+                  {heatmapColumns.map((col) => (
+                    <div key={col.weekIndex} className="flex flex-col gap-[2px]">
+                      {col.days.map((day) => {
+                        const colorCls = day.isFuture
+                          ? "bg-border/10 border-border/10 opacity-30"
+                          : heatColor(day.count);
+                        const todayCls = day.isToday
+                          ? "ring-1 ring-orange-400 ring-offset-[1px] ring-offset-background z-10"
+                          : "";
+                        return (
+                          <div
+                            key={day.dateStr}
+                            className={`w-[13px] h-[13px] rounded-[2px] border transition-transform duration-150 hover:scale-125 cursor-default ${colorCls} ${todayCls}`}
+                            onMouseEnter={(e) => {
+                              if (day.isFuture) return;
+                              const rect = (e.target as HTMLElement).getBoundingClientRect();
+                              setTooltip({
+                                text: day.count === 0
+                                  ? `${day.label} — no completions`
+                                  : `${day.label} — ${day.count} item${day.count !== 1 ? "s" : ""} completed`,
+                                x: rect.left + rect.width / 2,
+                                y: rect.top,
+                              });
+                            }}
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
-            
-            {/* Grid Legend */}
-            <div className="flex items-center gap-1.5 mt-4 text-[9px] text-muted-foreground justify-end pr-2">
+
+            {/* Legend */}
+            <div className="flex items-center gap-1.5 mt-4 text-[9px] text-muted-foreground justify-end pr-1">
               <span>Less</span>
-              <div className="w-2.5 h-2.5 rounded-[1px] bg-border/20" />
-              <div className="w-2.5 h-2.5 rounded-[1px] bg-primary/35" />
-              <div className="w-2.5 h-2.5 rounded-[1px] bg-primary/70" />
-              <div className="w-2.5 h-2.5 rounded-[1px] bg-primary" />
+              <div className="w-[11px] h-[11px] rounded-[2px] bg-[oklch(0.3_0_0)] border border-[oklch(0.35_0_0)]" />
+              <div className="w-[11px] h-[11px] rounded-[2px] bg-[oklch(0.45_0.18_270)] border border-[oklch(0.5_0.18_270)]" />
+              <div className="w-[11px] h-[11px] rounded-[2px] bg-[oklch(0.55_0.22_270)] border border-[oklch(0.6_0.22_270)]" />
+              <div className="w-[11px] h-[11px] rounded-[2px] bg-[oklch(0.65_0.25_270)] border border-[oklch(0.7_0.25_270)]" />
+              <div className="w-[11px] h-[11px] rounded-[2px] bg-[oklch(0.75_0.28_270)] border border-[oklch(0.78_0.28_270)]" />
               <span>More</span>
             </div>
           </div>
+
+          {/* Total count summary */}
+          {streakData?.daily_activity && (
+            <p className="text-[10px] text-muted-foreground mt-2 leading-normal">
+              <span className="font-bold text-foreground">
+                {streakData.daily_activity.reduce((sum: number, d: any) => sum + d.count, 0)}
+              </span>{" "}
+              items completed across{" "}
+              <span className="font-bold text-foreground">
+                {streakData.daily_activity.length}
+              </span>{" "}
+              active days in the past year.
+            </p>
+          )}
         </div>
 
-        {/* 3. Interactive Chart & General Info Grid */}
+        {/* 3. Chart + Category Distribution */}
         <div className="grid gap-6 md:grid-cols-3">
-          
-          {/* Main Chart Card */}
-          <div className="glass p-6 rounded-2xl border border-border/15 md:col-span-2 flex flex-col justify-between min-h-[350px]">
+
+          {/* Main Chart */}
+          <div className="glass p-6 rounded-2xl border border-border/15 md:col-span-2 flex flex-col min-h-[360px]">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
               <div>
-                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">
-                  History
-                </span>
-                <h3 className="text-base font-bold text-foreground">Completions & Time Chart</h3>
+                <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">History</span>
+                <h3 className="text-base font-bold text-foreground">Completions &amp; Time Chart</h3>
               </div>
-              
-              {/* Toggles */}
+
               <div className="flex flex-wrap gap-2">
-                {/* Metric Type */}
+                {/* Metric toggle */}
                 <div className="inline-flex rounded-lg bg-secondary/30 p-1 border border-border/10">
-                  <button
-                    onClick={() => setMetricType("time")}
-                    className={`rounded-md px-2 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
-                      metricType === "time" ? "bg-primary text-white shadow-sm" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Time (min)
-                  </button>
                   <button
                     onClick={() => setMetricType("completions")}
                     className={`rounded-md px-2 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
@@ -599,42 +697,37 @@ export default function AnalyticsPage() {
                   >
                     Completions
                   </button>
+                  <button
+                    onClick={() => setMetricType("time")}
+                    className={`rounded-md px-2 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
+                      metricType === "time" ? "bg-primary text-white shadow-sm" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Time (min)
+                  </button>
                 </div>
 
-                {/* Interval Type */}
+                {/* Interval toggle */}
                 <div className="inline-flex rounded-lg bg-secondary/30 p-1 border border-border/10">
-                  <button
-                    onClick={() => setIntervalType("daily")}
-                    className={`rounded-md px-2.5 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
-                      intervalType === "daily" ? "bg-secondary text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    30D
-                  </button>
-                  <button
-                    onClick={() => setIntervalType("weekly")}
-                    className={`rounded-md px-2.5 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
-                      intervalType === "weekly" ? "bg-secondary text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    12W
-                  </button>
-                  <button
-                    onClick={() => setIntervalType("monthly")}
-                    className={`rounded-md px-2.5 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
-                      intervalType === "monthly" ? "bg-secondary text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    12M
-                  </button>
+                  {(["daily", "weekly", "monthly"] as const).map((t, i) => (
+                    <button
+                      key={t}
+                      onClick={() => setIntervalType(t)}
+                      className={`rounded-md px-2.5 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
+                        intervalType === t ? "bg-secondary text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {["30D", "12W", "12M"][i]}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
 
-            {/* Render CSS Columns Chart */}
+            {/* Chart area — original stable implementation */}
             <div className="flex-1 flex items-end justify-between h-48 pt-6 border-b border-border/10 px-2 select-none relative">
-              
-              {/* If no data */}
+
+              {/* Empty state */}
               {activeChartData.length === 0 && (
                 <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                   No activity tracked for this interval.
@@ -643,11 +736,11 @@ export default function AnalyticsPage() {
 
               {activeChartData.map((d: any, idx: number) => {
                 const heightPercent = maxChartValue > 0 ? (d.value / maxChartValue) * 100 : 0;
-                
-                // Limit rendering dense labels for daily view
-                const shouldShowLabel = 
-                  intervalType !== "daily" || 
-                  idx % 5 === 0 || 
+
+                // Only show every 5th label for dense daily view
+                const shouldShowLabel =
+                  intervalType !== "daily" ||
+                  idx % 5 === 0 ||
                   idx === activeChartData.length - 1;
 
                 return (
@@ -677,56 +770,60 @@ export default function AnalyticsPage() {
                 );
               })}
             </div>
-            
+
             <div className="mt-4 text-[10px] text-muted-foreground leading-relaxed flex items-center gap-1.5">
               <CheckCircle2 className="h-3 w-3 text-primary shrink-0" />
               <span>
-                Average completion duration: <span className="font-bold text-foreground">{average_completion_time} minutes</span> per queue item.
+                Average completion duration:{" "}
+                <span className="font-bold text-foreground">{average_completion_time} minutes</span> per queue item.
               </span>
             </div>
           </div>
 
-          {/* Insights Panel: Category distribution */}
+          {/* Category distribution */}
           <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between">
             <div>
-              <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">
-                Category
-              </span>
+              <span className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold block mb-1">Category</span>
               <h3 className="text-base font-bold text-foreground mb-5">Reading Distribution</h3>
-              
+
               <div className="space-y-4">
-                {category_distribution.map((cat: any, idx: number) => {
-                  const maxCount = Math.max(...category_distribution.map((c: any) => c.count), 1);
-                  const percent = (cat.count / maxCount) * 100;
-                  
-                  // Simple color mappings
-                  let colorClass = "bg-primary";
-                  if (cat.category.toLowerCase() === "youtube") colorClass = "bg-rose-500";
-                  if (cat.category.toLowerCase() === "reddit") colorClass = "bg-orange-500";
-                  if (cat.category.toLowerCase() === "leetcode") colorClass = "bg-amber-400";
-                  if (cat.category.toLowerCase() === "pdf") colorClass = "bg-emerald-500";
-                  if (cat.category.toLowerCase() === "twitter") colorClass = "bg-sky-400";
+                {category_distribution
+                  .filter((cat: any) => cat.count > 0)
+                  .sort((a: any, b: any) => b.count - a.count)
+                  .map((cat: any, idx: number) => {
+                    const maxCount = Math.max(
+                      ...category_distribution.filter((c: any) => c.count > 0).map((c: any) => c.count),
+                      1
+                    );
+                    const percent = (cat.count / maxCount) * 100;
 
-                  return (
-                    <div key={idx} className="space-y-1.5">
-                      <div className="flex justify-between text-xs font-semibold">
-                        <span className="text-foreground">{cat.category}</span>
-                        <span className="text-muted-foreground text-[10px]">
-                          {cat.count} items ({cat.time_spent}m)
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-border/25 rounded-full overflow-hidden">
-                        <div
-                          style={{ width: `${percent}%` }}
-                          className={`h-full ${colorClass} rounded-full`}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                    let colorClass = "bg-primary";
+                    if (cat.category.toLowerCase() === "youtube") colorClass = "bg-rose-500";
+                    if (cat.category.toLowerCase() === "reddit") colorClass = "bg-orange-500";
+                    if (cat.category.toLowerCase() === "leetcode") colorClass = "bg-amber-400";
+                    if (cat.category.toLowerCase() === "pdf") colorClass = "bg-emerald-500";
+                    if (cat.category.toLowerCase() === "twitter") colorClass = "bg-sky-400";
 
-                {category_distribution.length === 0 && (
-                  <p className="text-xs text-muted-foreground">No completed items in categories.</p>
+                    return (
+                      <div key={idx} className="space-y-1.5">
+                        <div className="flex justify-between text-xs font-semibold">
+                          <span className="text-foreground">{cat.category}</span>
+                          <span className="text-muted-foreground text-[10px]">
+                            {cat.count} item{cat.count !== 1 ? "s" : ""} ({cat.time_spent}m)
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-border/25 rounded-full overflow-hidden">
+                          <div
+                            style={{ width: `${percent}%` }}
+                            className={`h-full ${colorClass} rounded-full transition-all duration-500`}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                {category_distribution.filter((cat: any) => cat.count > 0).length === 0 && (
+                  <p className="text-xs text-muted-foreground">No completed items in categories yet.</p>
                 )}
               </div>
             </div>
@@ -736,12 +833,11 @@ export default function AnalyticsPage() {
               <span>Categorized items optimize AI re-prioritizations.</span>
             </div>
           </div>
-
         </div>
 
-        {/* 4. Bottom Grid: Most Viewed Categories, Top AI Recommended Topics, & Streak */}
+        {/* 4. Bottom: Most Viewed + AI Topics */}
         <div className="grid gap-6 md:grid-cols-2">
-          
+
           {/* Most Viewed Categories */}
           <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between">
             <div>
@@ -749,7 +845,7 @@ export default function AnalyticsPage() {
                 <Eye className="h-4 w-4 text-primary" />
                 <h3 className="text-base font-bold text-foreground">Most Viewed Categories</h3>
               </div>
-              
+
               <div className="divide-y divide-border/10">
                 {most_viewed_categories.map((cat: any, idx: number) => (
                   <div key={idx} className="flex justify-between items-center py-3">
@@ -759,9 +855,7 @@ export default function AnalyticsPage() {
                       </div>
                       <span className="text-xs font-semibold text-foreground">{cat.category}</span>
                     </div>
-                    <span className="text-xs text-muted-foreground font-bold">
-                      {cat.views} opens
-                    </span>
+                    <span className="text-xs text-muted-foreground font-bold">{cat.views} opens</span>
                   </div>
                 ))}
 
@@ -770,20 +864,20 @@ export default function AnalyticsPage() {
                 )}
               </div>
             </div>
-            
+
             <p className="text-[10px] text-muted-foreground mt-4 leading-normal">
               Determined by items that you opened and reviewed in reader view or external links.
             </p>
           </div>
 
-          {/* Top AI Recommended Topics Read */}
+          {/* Top AI Topics */}
           <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between">
             <div>
               <div className="flex items-center gap-2 mb-4">
                 <Sparkles className="h-4 w-4 text-primary animate-pulse" />
                 <h3 className="text-base font-bold text-foreground">Top AI-Recommended Topics Read</h3>
               </div>
-              
+
               <div className="flex flex-wrap gap-2.5 pt-2">
                 {top_ai_topics.map((t: any, idx: number) => (
                   <div
@@ -804,7 +898,7 @@ export default function AnalyticsPage() {
                 )}
               </div>
             </div>
-            
+
             <p className="text-[10px] text-muted-foreground mt-4 leading-normal">
               Most common tags extracted from completed items that were recommended to you by AI suggestions.
             </p>
@@ -813,6 +907,16 @@ export default function AnalyticsPage() {
         </div>
 
       </main>
+
+      {/* Global floating tooltip for heatmap cells */}
+      {tooltip && (
+        <div
+          className="fixed z-50 pointer-events-none bg-popover text-popover-foreground text-[10px] font-semibold px-2.5 py-1.5 rounded-lg shadow-xl border border-border/30 -translate-x-1/2 -translate-y-full -mt-2 whitespace-nowrap"
+          style={{ left: tooltip.x, top: tooltip.y - 8 }}
+        >
+          {tooltip.text}
+        </div>
+      )}
     </div>
   );
 }

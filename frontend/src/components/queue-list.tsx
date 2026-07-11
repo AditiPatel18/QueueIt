@@ -29,7 +29,7 @@ import {
   FolderSync,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useItems, useCollections, useAnalytics, useRecommendation, ITEMS_CACHE_KEY, ANALYTICS_CACHE_KEY, RECOMMENDATION_CACHE_KEY } from "@/hooks/use-swr-queries";
+import { useItems, useCollections, useAnalytics, useRecommendation, ITEMS_CACHE_KEY, ANALYTICS_CACHE_KEY, RECOMMENDATION_CACHE_KEY, STREAK_HEATMAP_CACHE_KEY } from "@/hooks/use-swr-queries";
 import { mutate } from "swr";
 import { recalculatePriorities, bulkItemsAction } from "@/lib/api";
 import type { QueueItem, StatusFilter, TypeFilter, SortOption } from "@/types";
@@ -181,6 +181,7 @@ export function QueueList({
       mutateItems();
       mutate("api/collections");
       mutate(ANALYTICS_CACHE_KEY);
+      mutate(STREAK_HEATMAP_CACHE_KEY);
       mutate(RECOMMENDATION_CACHE_KEY);
     }
   }, [refreshSignal, mutateItems]);
@@ -193,6 +194,7 @@ export function QueueList({
     if (prevProcessingCountRef.current > 0 && processingCount === 0) {
       mutate("api/collections");
       mutate(ANALYTICS_CACHE_KEY);
+      mutate(STREAK_HEATMAP_CACHE_KEY);
       mutate(RECOMMENDATION_CACHE_KEY);
     }
     prevProcessingCountRef.current = processingCount;
@@ -280,6 +282,7 @@ export function QueueList({
         toast.success(newStatus === "completed" ? "Marked complete! ✓" : "Status updated");
         mutateItems();
         mutate(ANALYTICS_CACHE_KEY);
+        mutate(STREAK_HEATMAP_CACHE_KEY);
         mutate(RECOMMENDATION_CACHE_KEY);
       } catch (err: any) {
         mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
@@ -309,6 +312,7 @@ export function QueueList({
         toast.success(isFav ? "Added to favorites ★" : "Removed from favorites");
         mutateItems();
         mutate(ANALYTICS_CACHE_KEY);
+        mutate(STREAK_HEATMAP_CACHE_KEY);
         mutate(RECOMMENDATION_CACHE_KEY);
       } catch (err: any) {
         mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
@@ -331,6 +335,7 @@ export function QueueList({
         toast.success("Item deleted");
         mutateItems();
         mutate(ANALYTICS_CACHE_KEY);
+        mutate(STREAK_HEATMAP_CACHE_KEY);
         mutate(RECOMMENDATION_CACHE_KEY);
       } catch (err: any) {
         mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
@@ -395,6 +400,7 @@ export function QueueList({
       setSelectedIds(new Set());
       mutateItems();
       mutate(ANALYTICS_CACHE_KEY);
+      mutate(STREAK_HEATMAP_CACHE_KEY);
       mutate(RECOMMENDATION_CACHE_KEY);
     } catch (err: any) {
       mutateItems({ items: previousItems, total: previousItems.length }, { revalidate: true });
@@ -405,6 +411,7 @@ export function QueueList({
   const handleRefresh = () => {
     mutateItems();
     mutate(ANALYTICS_CACHE_KEY);
+    mutate(STREAK_HEATMAP_CACHE_KEY);
     mutate(RECOMMENDATION_CACHE_KEY);
     onRefresh?.();
   };

@@ -2,7 +2,7 @@
 // All functions use canonical field names matching the database schema.
 
 import { createClient } from "./supabase/client";
-import type { ItemFilters, QueueItem, ReadingAnalyticsData } from "@/types";
+import type { ItemFilters, QueueItem, ReadingAnalyticsData, ReadingAnalyticsDashboardData, RemindersResponse } from "@/types";
 
 // Normalise base URL – strip trailing slash to avoid "//api" problems
 const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "")}/api`;
@@ -375,4 +375,98 @@ export async function sendChatMessage(message: string, history: ChatMessage[]): 
 export async function getReadingAnalytics(): Promise<ReadingAnalyticsData> {
   return apiClient("/items/analytics/reading");
 }
+
+/** Get Reading Analytics Dashboard metrics */
+export async function getAnalyticsDashboard(): Promise<ReadingAnalyticsDashboardData> {
+  return apiClient("/analytics");
+}
+
+/** Get user reminders, history, badge counts and settings with optional filters */
+export async function getReminders(
+  include_history?: boolean,
+  include_settings?: boolean,
+  include_gamification?: boolean
+): Promise<RemindersResponse> {
+  const queryParts: string[] = [];
+  if (include_history !== undefined) queryParts.push(`include_history=${include_history}`);
+  if (include_settings !== undefined) queryParts.push(`include_settings=${include_settings}`);
+  if (include_gamification !== undefined) queryParts.push(`include_gamification=${include_gamification}`);
+  
+  const queryString = queryParts.length > 0 ? `?${queryParts.join("&")}` : "";
+  return apiClient(`/reminders${queryString}`);
+}
+
+/** Update user reminder configurations */
+export async function updateReminderSettings(
+  enabled: boolean, 
+  reminder_time: string,
+  frequency?: string,
+  custom_days?: string,
+  timezone?: string,
+  browser_notifications?: boolean,
+  email_reminders?: boolean
+): Promise<any> {
+  return apiClient("/reminders/settings", {
+    method: "POST",
+    body: JSON.stringify({ 
+      enabled, 
+      reminder_time, 
+      frequency, 
+      custom_days, 
+      timezone, 
+      browser_notifications, 
+      email_reminders 
+    }),
+  });
+}
+
+/** Snooze a reading reminder */
+export async function snoozeReminder(reminder_id: string, type: "1h" | "today" | "tomorrow"): Promise<any> {
+  return apiClient(`/reminders/${reminder_id}/snooze`, {
+    method: "POST",
+    body: JSON.stringify({ type }),
+  });
+}
+
+/** Mark reminder associated queue item completed */
+export async function completeReminder(reminder_id: string): Promise<any> {
+  return apiClient(`/reminders/${reminder_id}/complete`, {
+    method: "POST",
+  });
+}
+
+/** Mark reminder as read to clear notification badge counts */
+export async function readReminder(reminder_id: string): Promise<any> {
+  return apiClient(`/reminders/${reminder_id}/read`, {
+    method: "POST",
+  });
+}
+
+/** Track reminder delivery confirmation from device */
+export async function deliverReminder(reminder_id: string): Promise<any> {
+  return apiClient(`/reminders/${reminder_id}/deliver`, {
+    method: "POST",
+  });
+}
+
+/** Track reminder clicked/opened state by user */
+export async function openReminder(reminder_id: string): Promise<any> {
+  return apiClient(`/reminders/${reminder_id}/open`, {
+    method: "POST",
+  });
+}
+
+/** Consume an available streak freeze to protect user streaks */
+export async function useStreakFreeze(): Promise<any> {
+  return apiClient("/reminders/gamification/freeze", {
+    method: "POST",
+  });
+}
+
+/** Get isolated streak heatmap data */
+export async function getStreakHeatmap(): Promise<any> {
+  return apiClient("/items/user/streak-heatmap");
+}
+
+
 

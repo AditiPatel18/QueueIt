@@ -114,3 +114,83 @@ export interface ReadingAnalyticsData {
     }[];
   };
 }
+
+export interface ReadingAnalyticsDashboardData {
+  total_items: number;
+  completed_items: number;
+  completion_percentage: number;
+  total_reading_time: number;
+  time_completed: number;
+  remaining_time: number;
+  average_reading_time_item: number;
+  current_reading_streak: number;
+  longest_streak: number;
+  productivity_score: number;
+  last_7_days: {
+    date: string;
+    completed_count: number;
+    reading_minutes: number;
+  }[];
+  last_30_days: {
+    date: string;
+    completed_count: number;
+    reading_minutes: number;
+  }[];
+  weekly_reading_minutes: number;
+  monthly_reading_minutes: number;
+  daily_completion_counts: Record<string, number>;
+}
+
+export interface ReminderSettings {
+  enabled: boolean;
+  reminder_time: string;
+  snoozed_until: string | null;
+  last_reminded_at: string | null;
+  frequency: "daily" | "weekdays" | "weekly" | "custom";
+  custom_days: string;
+  timezone: string;
+  browser_notifications: boolean;
+  email_reminders: boolean;
+}
+
+export interface ReminderHistoryEntry {
+  id: string;
+  user_id: string;
+  item_id: string | null;
+  title: string;
+  scheduled_time: string;
+  sent_at: string;
+  status: 'pending' | 'sent' | 'delivered' | 'opened' | 'completed' | 'snoozed' | 'read' | 'failed';
+  channel: string;
+  completed_at: string | null;
+}
+
+export interface GamificationBadge {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+}
+
+export interface GamificationData {
+  xp: number;
+  level: number;
+  xp_needed: number;
+  streak_freezes_available: number;
+  last_freeze_used_at: string | null;
+  daily_goal: number;
+  current_streak: number;
+  longest_streak: number;
+  calendar: string[];
+  badges: GamificationBadge[];
+}
+
+export interface RemindersResponse {
+  settings: ReminderSettings;
+  active_reminders: ReminderHistoryEntry[];
+  unread_count: number;
+  history: ReminderHistoryEntry[];
+  gamification: GamificationData;
+}
+
+

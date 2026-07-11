@@ -192,6 +192,25 @@ export const QueueItemCard = memo(function QueueItemCard({
     setIsTimerRunning(item.status === "reading");
   }, [item.id, item.status]);
 
+  // Auto-expand and scroll to item if item_id or item query param matches this item
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      // Support both ?item= (used by reminder emails) and ?item_id= (legacy)
+      const queryItemId = params.get("item") || params.get("item_id");
+      if (queryItemId === item.id) {
+        setShowExpanded(true);
+        const timer = setTimeout(() => {
+          const element = document.getElementById(`item-card-${item.id}`);
+          if (element) {
+            element.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }, 500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [item.id]);
+
   // Sync incremental timer updates to backend every 10 seconds of active reading
   useEffect(() => {
     if (item.status !== "reading" || !isTimerRunning) return;
@@ -426,6 +445,7 @@ export const QueueItemCard = memo(function QueueItemCard({
 
   return (
     <Card
+      id={`item-card-${item.id}`}
       draggable={true}
       onDragStart={(e) => {
         e.dataTransfer.setData("text/plain", item.id);
