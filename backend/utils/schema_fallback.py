@@ -23,6 +23,7 @@ class SchemaFallbackManager:
         self.has_full_summary = False
         self.has_estimated_time_minutes = False
         self.has_actual_time_spent = False
+        self.has_normalized_url = False
         self.initialized = False
         self.detect_schema()
         self.init_sqlite()
@@ -57,6 +58,8 @@ class SchemaFallbackManager:
             cols.append("estimated_time_minutes")
         if self.has_actual_time_spent:
             cols.append("actual_time_spent")
+        if self.has_normalized_url:
+            cols.append("normalized_url")
         return ",".join(cols)
 
     def detect_schema(self):
@@ -85,6 +88,7 @@ class SchemaFallbackManager:
                 self.has_full_summary = "full_summary" in properties
                 self.has_estimated_time_minutes = "estimated_time_minutes" in properties
                 self.has_actual_time_spent = "actual_time_spent" in properties
+                self.has_normalized_url = "normalized_url" in properties
                 
                 logger.info(
                     f"[SchemaFallback] Remote schema status: "
@@ -99,7 +103,8 @@ class SchemaFallbackManager:
                     f"is_favorite={self.has_is_favorite}, "
                     f"full_summary={self.has_full_summary}, "
                     f"estimated_time_minutes={self.has_estimated_time_minutes}, "
-                    f"actual_time_spent={self.has_actual_time_spent}"
+                    f"actual_time_spent={self.has_actual_time_spent}, "
+                    f"normalized_url={self.has_normalized_url}"
                 )
             else:
                 logger.error(f"[SchemaFallback] Failed to fetch schema: {response.status_code}")
@@ -147,6 +152,11 @@ class SchemaFallbackManager:
                 pass
             try:
                 cursor.execute("ALTER TABLE local_item_meta ADD COLUMN actual_time_spent REAL DEFAULT 0.0")
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+            try:
+                cursor.execute("ALTER TABLE local_item_meta ADD COLUMN normalized_url TEXT")
             except sqlite3.OperationalError:
                 # Column already exists
                 pass

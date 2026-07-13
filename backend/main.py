@@ -49,8 +49,8 @@ app.mount("/static/favicons", StaticFiles(directory="static/favicons"), name="fa
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000", "chrome-extension://"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

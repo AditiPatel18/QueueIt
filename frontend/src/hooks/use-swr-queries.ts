@@ -19,8 +19,8 @@ export function useHistoryStats() {
     HISTORY_STATS_CACHE_KEY,
     () => getHistoryStats(),
     {
-      revalidateOnFocus: true,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 30000,
     }
   );
 
@@ -41,11 +41,11 @@ export function useItems(filters: ItemFilters) {
     key,
     () => getItems(filters),
     {
-      revalidateOnFocus: true,
+      revalidateOnFocus: false,
       revalidateOnReconnect: true,
-      dedupingInterval: 2000,
+      dedupingInterval: 3000,
       refreshInterval: (latestData) =>
-        latestData?.items?.some((item) => item.processing_status === "processing" || item.processing_status === "queued") ? 2000 : 0,
+        latestData?.items?.some((item) => item.processing_status === "processing" || item.processing_status === "queued") ? 3000 : 0,
     }
   );
 
@@ -64,8 +64,8 @@ export function useCollections() {
     COLLECTIONS_CACHE_KEY,
     () => getCollections(),
     {
-      revalidateOnFocus: true,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 30000,
     }
   );
 
@@ -83,8 +83,8 @@ export function useAnalytics() {
     ANALYTICS_CACHE_KEY,
     () => getStreakData(),
     {
-      revalidateOnFocus: true,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 60000,
     }
   );
 
@@ -102,8 +102,8 @@ export function useRecommendation() {
     RECOMMENDATION_CACHE_KEY,
     () => getRecommendedNext(),
     {
-      revalidateOnFocus: true,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 60000,
     }
   );
 
@@ -121,8 +121,8 @@ export function useReadingAnalytics() {
     READING_ANALYTICS_CACHE_KEY,
     () => getReadingAnalytics(),
     {
-      revalidateOnFocus: true,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 60000,
     }
   );
 
@@ -140,8 +140,8 @@ export function useAnalyticsDashboard() {
     ANALYTICS_DASHBOARD_CACHE_KEY,
     () => getAnalyticsDashboard(),
     {
-      revalidateOnFocus: true,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 60000,
     }
   );
 
@@ -188,8 +188,8 @@ export function useStreakHeatmap() {
     STREAK_HEATMAP_CACHE_KEY,
     () => getStreakHeatmap(),
     {
-      revalidateOnFocus: true,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 60000,
     }
   );
 

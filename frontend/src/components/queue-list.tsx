@@ -408,17 +408,17 @@ export function QueueList({
     }
   };
 
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(() => {
     mutateItems();
     mutate(ANALYTICS_CACHE_KEY);
     mutate(STREAK_HEATMAP_CACHE_KEY);
     mutate(RECOMMENDATION_CACHE_KEY);
     onRefresh?.();
-  };
+  }, [mutateItems, onRefresh]);
 
-  const handleTagClick = (tag: string) => {
-    setActiveTag(tag === activeTag ? null : tag);
-  };
+  const handleTagClick = useCallback((tag: string) => {
+    setActiveTag((prev) => (tag === prev ? null : tag));
+  }, []);
 
   const clearFilters = () => {
     setSearch("");

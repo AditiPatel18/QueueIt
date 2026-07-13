@@ -830,6 +830,7 @@ Return ONLY a JSON object:
         - Empty or very short (<30 chars): always reject.
         - Long summaries (>=200 chars): always accept (genuine Gemini output).
         - Short summaries (<200 chars): reject if they start with OR contain a metadata pattern.
+          Exception: Allow exactly "Summary could not be generated." (common short content response).
         """
         if not summary or len(summary.strip()) < 30:
             return True
@@ -839,10 +840,13 @@ Return ONLY a JSON object:
             return False
         # Short text: check for metadata pattern start or full containment
         s_lower = s.lower()
+        if s_lower.rstrip(".") == "summary could not be generated":
+            return False
         for pattern in self.METADATA_PATTERNS:
             if s_lower.startswith(pattern) or pattern in s_lower:
                 return True
         return False
+
 
     def analyze_content(
         self,

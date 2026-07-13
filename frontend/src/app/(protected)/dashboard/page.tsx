@@ -24,12 +24,21 @@ import {
   Inbox,
 } from "lucide-react";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
-import { AddItemDialog } from "@/components/add-item-dialog";
+import dynamic from "next/dynamic";
 import { QueueList } from "@/components/queue-list";
 import { CollectionsSidebar } from "@/components/collections-sidebar";
-import { RemindersPopover } from "@/components/reminders-popover";
 import { toast } from "sonner";
 import { getItem } from "@/lib/api";
+
+const AddItemDialog = dynamic(
+  () => import("@/components/add-item-dialog").then((m) => ({ default: m.AddItemDialog })),
+  { ssr: false, loading: () => null }
+);
+
+const RemindersPopover = dynamic(
+  () => import("@/components/reminders-popover").then((m) => ({ default: m.RemindersPopover })),
+  { ssr: false, loading: () => null }
+);
 
 
 function DashboardContent() {

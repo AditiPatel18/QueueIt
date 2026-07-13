@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QueueIt v2</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header>
+            <div class="logo-container">
+                <div class="logo-icon"></div>
+                <span class="logo-text">QueueIt <span class="v2-tag">v2</span></span>
+            </div>
+            <div id="status-badge" class="badge">Detecting...</div>
+        </header>
+
+        <!-- Main Content -->
+        <main>
+            <!-- Card containing the page info being saved -->
+            <div class="preview-card">
+                <div class="favicon-container">
+                    <img id="favicon-img" src="icons/icon32.png" alt="Favicon" class="favicon-placeholder">
+                </div>
+                <div class="preview-details">
+                    <h3 id="preview-title" class="title-loading">Fetching title...</h3>
+                    <div class="metadata">
+                        <span id="source-name">...</span>
+                        <span class="dot">•</span>
+                        <span id="read-time">...</span>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Toasts / Status Overlays -->
+        <div id="toast-container">
+            <!-- Loading Toast -->
+            <div id="toast-loading" class="toast toast-info">
+                <div class="spinner"></div>
+                <span class="toast-message">Saving to QueueIt...</span>
+            </div>
+
+            <!-- Success Toast -->
+            <div id="toast-success" class="toast toast-success hidden">
+                <div class="icon-circle">✓</div>
+                <div class="toast-content">
+                    <span class="toast-title">Saved!</span>
+                    <span class="toast-message">Added to your queue</span>
+                </div>
+            </div>
+
+            <!-- Duplicate Toast -->
+            <div id="toast-duplicate" class="toast toast-warning hidden">
+                <div class="icon-circle">!</div>
+                <div class="toast-content">
+                    <span class="toast-title">Already Saved</span>
+                    <span class="toast-message">Already in Queue</span>
+                </div>
+            </div>
+
+            <!-- Error Toast -->
+            <div id="toast-error" class="toast toast-error hidden">
+                <div class="icon-circle">✕</div>
+                <div class="toast-content">
+                    <span class="toast-title">Error</span>
+                    <span id="error-message" class="toast-message">Failed to save item</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer actions if logged out / error -->
+        <footer id="footer-actions" class="hidden">
+            <button id="action-btn" class="btn-primary">
+                Open Dashboard
+            </button>
+        </footer>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

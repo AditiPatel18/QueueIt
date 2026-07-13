@@ -13,6 +13,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentUrl = '';
     let currentType = 'article';
 
+    const normalizeUrl = (urlStr) => {
+        try {
+            const url = new URL(urlStr);
+            url.hash = '';
+            if (url.pathname.length > 1 && url.pathname.endsWith('/')) {
+                url.pathname = url.pathname.slice(0, -1);
+            }
+            const params = new URLSearchParams(url.search);
+            const keysToDelete = [];
+            for (const key of params.keys()) {
+                const lowerKey = key.toLowerCase();
+                if (lowerKey.startsWith('utm_') || lowerKey === 'fbclid' || lowerKey === 'gclid') {
+                    keysToDelete.push(key);
+                }
+            }
+            keysToDelete.forEach(k => params.delete(k));
+            const sortedParams = Array.from(params.entries()).sort((a, b) => {
+                if (a[0] !== b[0]) return a[0].localeCompare(b[0]);
+                return a[1].localeCompare(b[1]);
+            });
+            const newSearch = new URLSearchParams(sortedParams).toString();
+            url.search = newSearch ? `?${newSearch}` : '';
+            return url.toString().toLowerCase().trim();
+        } catch (e) {
+            return urlStr.toLowerCase().trim();
+        }
+    };
+
     // Helper: show error
     const showError = (msg) => {
         errorMessage.textContent = msg;
@@ -143,24 +171,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                 })
             });
 
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (e) {}
+
             if (!response.ok) {
                 let errMessage = "Failed to save content";
-                try {
-                    const errData = await response.json();
-                    errMessage = errData.detail || errData.error || errMessage;
-                } catch (e) { }
+                if (data) {
+                    errMessage = data.detail || data.error || errMessage;
+                }
                 throw new Error(errMessage);
             }
 
-            // Success
+            const isDuplicate = response.headers.get("X-QueueIt-Duplicate") === "true" || (data && data.is_duplicate);
+
+            // Success or Duplicate
             const successTextEl = successOverlay.querySelector('p');
             if (successTextEl) {
-                successTextEl.textContent = "Saved to Queue ✓";
+                successTextEl.textContent = isDuplicate ? "Already saved in Queue." : "Saved to Queue ✓";
             }
             successOverlay.classList.remove('hidden');
+
+            if (isDuplicate && data && data.id) {
+                chrome.tabs.create({ url: `http://localhost:3000/?item=${data.id}` });
+            }
+
             setTimeout(() => {
                 window.close();
-            }, 1000);
+            }, 1500);
 
         } catch (error) {
             showError(error.message);

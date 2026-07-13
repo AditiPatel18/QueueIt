@@ -21,9 +21,8 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
     ["api/reminders", false, true, false],
     () => getReminders(false, true, false),
     {
-      revalidateOnFocus: true,
-      refreshInterval: 10000,
-      dedupingInterval: 5000,
+      revalidateOnFocus: false,
+      dedupingInterval: 30000,
     }
   );
 

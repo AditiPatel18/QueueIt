@@ -18,6 +18,7 @@ import threading
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 from utils.schema_fallback import fallback_db
+from utils.url_helper import normalize_url
 
 _thread_local = threading.local()
 
@@ -1421,125 +1422,168 @@ async def reclassify_items(background_tasks: BackgroundTasks, user_id: str = Dep
 async def create_item(req: ItemCreate, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
     try:
         clean_url = req.url.strip()
+        normalized = normalize_url(clean_url)
 
-        # Duplicate check
-        existing = await asyncio.to_thread(
-            lambda: supabase.table("items")
-            .select("*")
-            .eq("user_id", user_id)
-            .eq("url", clean_url)
-            .execute()
-        )
-        if existing.data:
-            print(f"[items] Duplicate URL for user {user_id}, returning existing item")
-            return item_to_response(existing.data[0])
-
-        # Synchronous, instant source detection
-        platform_info = resolve_platform_info(clean_url)
-        title = req.title or clean_url
-
-        # Resolve collection_id / Handle suggested collection creation
-        collection_id = req.collection_id
-        if not collection_id and req.suggested_collection_name:
-            try:
-                user_cols = fallback_db.list_collections(user_id, supabase)
-                existing_col = None
-                for c in user_cols:
-                    if c["name"].lower().strip() == req.suggested_collection_name.lower().strip():
-                        existing_col = c
-                        break
-                
-                if existing_col:
-                    collection_id = existing_col["id"]
-                else:
-                    new_col = fallback_db.create_collection(
-                        user_id=user_id,
-                        name=req.suggested_collection_name.strip(),
-                        color=req.suggested_collection_color or "blue",
-                        supabase_client=supabase
-                    )
-                    collection_id = new_col["id"]
-            except Exception as col_err:
-                logger.error(f"Failed to create suggested collection '{req.suggested_collection_name}': {col_err}")
-
-        # Build initial DB row with 'processing' status
-        item_data = {
-            "user_id": user_id,
-            "url": clean_url,
-            "title": title,
-            "content_type": platform_info["source_type"],
-            "source_name": platform_info["source_name"],
-            "source_type": platform_info["source_type"],
-            "source_domain": platform_info["source_domain"],
-            "logo_url": platform_info["logo_url"],
-            "tags": ["uncategorized"],
-            "ai_summary": None,
-            "priority_score": 50.0,
-            "status": "unread",
-            "processing_status": "queued",
-            "is_favorite": False,
-        }
-        if fallback_db.has_estimated_time_minutes:
-            item_data["estimated_time_minutes"] = 5.0
-        if fallback_db.has_collection_id and collection_id:
-            item_data["collection_id"] = collection_id
-
-        try:
-            result = await asyncio.to_thread(
-                lambda: supabase.table("items").insert(item_data).execute()
-            )
-        except Exception as e:
-            if "column" in str(e).lower():
-                logger.warning("Database insert failed due to missing branding columns. Retrying without new columns.")
-                fallback_item_data = {k: v for k, v in item_data.items() if k not in ["source_type", "source_domain", "logo_url"]}
-                if fallback_db.has_collection_id and collection_id:
-                    fallback_item_data["collection_id"] = collection_id
-                result = await asyncio.to_thread(
-                    lambda: supabase.table("items").insert(fallback_item_data).execute()
+        # Acquire lock to prevent race conditions on simultaneous saves of the same normalized URL
+        async with item_locks[(user_id, normalized)]:
+            # 1. Duplicate check using normalized URL
+            if fallback_db.has_normalized_url:
+                existing = await asyncio.to_thread(
+                    lambda: supabase.table("items")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .eq("normalized_url", normalized)
+                    .execute()
                 )
             else:
-                raise e
-        if not result.data:
-            raise Exception("Failed to insert item into database")
+                # Fallback: check duplicates locally using SQLite fallback if available
+                # or query remote items list and filter locally
+                result = await asyncio.to_thread(
+                    lambda: supabase.table("items")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+                existing_items = result.data or []
+                matched_item = None
+                for item in existing_items:
+                    if normalize_url(item.get("url", "")) == normalized:
+                        matched_item = item
+                        break
+                
+                class MockResponse:
+                    def __init__(self, data):
+                        self.data = data
+                if matched_item:
+                    existing = MockResponse([matched_item])
+                else:
+                    existing = MockResponse([])
 
-        print("[PIPELINE LOG] Database saved initially")
-        logger.info("Database saved initially")
+            if existing.data:
+                print(f"[items] Duplicate normalized URL for user {user_id}, returning existing item")
+                final_item = fallback_db.merge_single_item_metadata(user_id, existing.data[0])
+                resp_data = item_to_response(final_item)
+                resp_data["is_duplicate"] = True
+                
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    content=resp_data,
+                    status_code=200,
+                    headers={"X-QueueIt-Duplicate": "true"}
+                )
 
-        item_id = result.data[0].get('id')
-        print(f"[items] Saved item id={item_id}")
-        update_ingestion_debug(item_id, "validation", f"Initial validation and DB insert completed. URL: '{clean_url}'")
-        
-        # Save collection_id and initial estimated_time_minutes locally if needed (handles both remote/local SQLite fallback)
-        meta_updates = {}
-        if collection_id:
-            meta_updates["collection_id"] = collection_id
-        if not fallback_db.has_estimated_time_minutes:
-            meta_updates["estimated_time_minutes"] = 5.0
-            
-        if meta_updates:
+            # Synchronous, instant source detection
+            platform_info = resolve_platform_info(clean_url)
+            title = req.title or clean_url
+
+            # Resolve collection_id / Handle suggested collection creation
+            collection_id = req.collection_id
+            if not collection_id and req.suggested_collection_name:
+                try:
+                    user_cols = fallback_db.list_collections(user_id, supabase)
+                    existing_col = None
+                    for c in user_cols:
+                        if c["name"].lower().strip() == req.suggested_collection_name.lower().strip():
+                            existing_col = c
+                            break
+                    
+                    if existing_col:
+                        collection_id = existing_col["id"]
+                    else:
+                        new_col = fallback_db.create_collection(
+                            user_id=user_id,
+                            name=req.suggested_collection_name.strip(),
+                            color=req.suggested_collection_color or "blue",
+                            supabase_client=supabase
+                        )
+                        collection_id = new_col["id"]
+                except Exception as col_err:
+                    logger.error(f"Failed to create suggested collection '{req.suggested_collection_name}': {col_err}")
+
+            # Build initial DB row with 'processing' status
+            item_data = {
+                "user_id": user_id,
+                "url": clean_url,
+                "title": title,
+                "content_type": platform_info["source_type"],
+                "source_name": platform_info["source_name"],
+                "source_type": platform_info["source_type"],
+                "source_domain": platform_info["source_domain"],
+                "logo_url": platform_info["logo_url"],
+                "tags": ["uncategorized"],
+                "ai_summary": None,
+                "priority_score": 50.0,
+                "status": "unread",
+                "processing_status": "queued",
+                "is_favorite": False,
+            }
+            if fallback_db.has_normalized_url:
+                item_data["normalized_url"] = normalized
+            if fallback_db.has_estimated_time_minutes:
+                item_data["estimated_time_minutes"] = 5.0
+            if fallback_db.has_collection_id and collection_id:
+                item_data["collection_id"] = collection_id
+
             try:
-                fallback_db.update_item_metadata(user_id, item_id, meta_updates, supabase)
-            except Exception as col_save_err:
-                logger.error(f"Failed to save collection/time metadata: {col_save_err}")
-        
-        # Run the extraction and enrichment pipeline asynchronously
-        background_tasks.add_task(
-            run_background_extraction_and_enrichment,
-            item_id,
-            clean_url,
-            user_id,
-            req.title
-        )
-        
-        # Fetch the initially inserted item row
-        res_inserted = await asyncio.to_thread(
-            lambda: supabase.table("items").select("*").eq("id", item_id).execute()
-        )
-        if not res_inserted.data:
-            raise Exception("Failed to retrieve the inserted item from the database")
+                result = await asyncio.to_thread(
+                    lambda: supabase.table("items").insert(item_data).execute()
+                )
+            except Exception as e:
+                if "column" in str(e).lower():
+                    logger.warning("Database insert failed due to missing branding columns. Retrying without new columns.")
+                    fallback_item_data = {k: v for k, v in item_data.items() if k not in ["source_type", "source_domain", "logo_url"]}
+                    if fallback_db.has_normalized_url:
+                        fallback_item_data["normalized_url"] = normalized
+                    if fallback_db.has_collection_id and collection_id:
+                        fallback_item_data["collection_id"] = collection_id
+                    result = await asyncio.to_thread(
+                        lambda: supabase.table("items").insert(fallback_item_data).execute()
+                    )
+                else:
+                    raise e
+            if not result.data:
+                raise Exception("Failed to insert item into database")
+
+            print("[PIPELINE LOG] Database saved initially")
+            logger.info("Database saved initially")
+
+            item_id = result.data[0].get('id')
+            print(f"[items] Saved item id={item_id}")
+            update_ingestion_debug(item_id, "validation", f"Initial validation and DB insert completed. URL: '{clean_url}'")
             
-        final_item = fallback_db.merge_single_item_metadata(user_id, res_inserted.data[0])
-        return item_to_response(final_item)
+            # Save collection_id and initial estimated_time_minutes locally if needed (handles both remote/local SQLite fallback)
+            meta_updates = {}
+            if collection_id:
+                meta_updates["collection_id"] = collection_id
+            if not fallback_db.has_estimated_time_minutes:
+                meta_updates["estimated_time_minutes"] = 5.0
+            if not fallback_db.has_normalized_url:
+                meta_updates["normalized_url"] = normalized
+                
+            if meta_updates:
+                try:
+                    fallback_db.update_item_metadata(user_id, item_id, meta_updates, supabase)
+                except Exception as col_save_err:
+                    logger.error(f"Failed to save collection/time metadata: {col_save_err}")
+            
+            # Run the extraction and enrichment pipeline asynchronously
+            background_tasks.add_task(
+                run_background_extraction_and_enrichment,
+                item_id,
+                clean_url,
+                user_id,
+                req.title
+            )
+            
+            # Fetch the initially inserted item row
+            res_inserted = await asyncio.to_thread(
+                lambda: supabase.table("items").select("*").eq("id", item_id).execute()
+            )
+            if not res_inserted.data:
+                raise Exception("Failed to retrieve the inserted item from the database")
+                
+            final_item = fallback_db.merge_single_item_metadata(user_id, res_inserted.data[0])
+            return item_to_response(final_item)
 
     except HTTPException:
         raise

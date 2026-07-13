@@ -194,6 +194,30 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
       const item = data;
       console.log("[AddItem] Saved item:", item?.id, item?.title);
 
+      const isDuplicate = response.headers.get("X-QueueIt-Duplicate") === "true" || data?.is_duplicate;
+      if (isDuplicate) {
+        toast.info("Already saved in Queue.");
+        if (typeof window !== "undefined") {
+          const urlObj = new URL(window.location.href);
+          urlObj.searchParams.set("item", item.id);
+          window.history.pushState({}, "", urlObj.toString());
+          
+          setTimeout(() => {
+            const element = document.getElementById(`item-card-${item.id}`);
+            if (element) {
+              element.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+          }, 600);
+        }
+        setSavedTitle(item?.title || "Already saved!");
+        setState("success");
+        setTimeout(() => {
+          setOpen(false);
+          onItemAdded?.();
+        }, 1500);
+        return;
+      }
+
       setSavedTitle(item?.title || "Content saved!");
       setState("success");
       toast.success("✓ Saved to Queue");
