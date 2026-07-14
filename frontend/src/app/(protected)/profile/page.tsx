@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -44,8 +45,7 @@ type ActiveSection = "account" | "activity" | "settings" | "logout";
 
 export default function ProfilePage() {
   const router = useRouter();
-  const [user, setUser] = useState<SupabaseUser | null>(null);
-  const [userLoading, setUserLoading] = useState(true);
+  const { user, loading: userLoading } = useAuth();
   const [updatingProfile, setUpdatingProfile] = useState(false);
   const [updatingGoal, setUpdatingGoal] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -61,21 +61,12 @@ export default function ProfilePage() {
   const { analytics, isLoading: analyticsLoading, error: analyticsError } = useAnalytics();
 
   useEffect(() => {
-    const getUser = async () => {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (user) {
-        setUser(user);
-        setDisplayName(user.user_metadata?.full_name || "");
-        setAvatarUrl(user.user_metadata?.avatar_url || "");
-        setReadingGoal(String(user.user_metadata?.daily_reading_goal_minutes || "15"));
-      }
-      setUserLoading(false);
-    };
-    getUser();
-  }, []);
+    if (user) {
+      setDisplayName(user.user_metadata?.full_name || "");
+      setAvatarUrl(user.user_metadata?.avatar_url || "");
+      setReadingGoal(String(user.user_metadata?.daily_reading_goal_minutes || "15"));
+    }
+  }, [user]);
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,10 +83,6 @@ export default function ProfilePage() {
       });
 
       if (error) throw error;
-
-      if (data.user) {
-        setUser(data.user);
-      }
 
       toast.success("Profile updated successfully!");
     } catch (err: any) {
@@ -121,10 +108,6 @@ export default function ProfilePage() {
       });
 
       if (error) throw error;
-
-      if (data.user) {
-        setUser(data.user);
-      }
 
       toast.success("Daily reading goal updated successfully!");
       // Mutate analytics SWR cache so the goal updates immediately in consistency section

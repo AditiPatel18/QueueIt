@@ -1,13 +1,7 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import { Toaster } from "sonner";
+import { AuthProvider } from "@/components/auth-provider";
 import "./globals.css";
-
-const inter = Inter({
-  variable: "--font-sans",
-  subsets: ["latin"],
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "QueueIt — Save Anything, Consume Anywhere",
@@ -22,20 +16,22 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
+    <html lang="en" className="h-full antialiased font-sans">
       <body className="min-h-full flex flex-col font-sans">
-        {children}
-        <Toaster
-          position="bottom-right"
-          toastOptions={{
-            style: {
-              background: "oklch(0.13 0.01 270 / 90%)",
-              border: "1px solid oklch(1 0 0 / 12%)",
-              color: "oklch(0.95 0.01 270)",
-              backdropFilter: "blur(20px)",
-            },
-          }}
-        />
+        <AuthProvider>
+          {children}
+          <Toaster
+            position="bottom-right"
+            toastOptions={{
+              style: {
+                background: "oklch(0.13 0.01 270 / 90%)",
+                border: "1px solid oklch(1 0 0 / 12%)",
+                color: "oklch(0.95 0.01 270)",
+                backdropFilter: "blur(20px)",
+              },
+            }}
+          />
+        </AuthProvider>
       </body>
     </html>
   );

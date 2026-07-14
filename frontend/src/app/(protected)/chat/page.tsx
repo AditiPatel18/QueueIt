@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -42,8 +43,7 @@ interface MessageWithSources {
 
 export default function ChatPage() {
   const router = useRouter();
-  const [user, setUser] = useState<SupabaseUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { user, loading } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<MessageWithSources[]>([]);
@@ -55,15 +55,6 @@ export default function ChatPage() {
   const abortStreamRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    const getUser = async () => {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      setUser(user);
-      setLoading(false);
-    };
-    getUser();
     return () => {
       abortStreamRef.current?.();
     };

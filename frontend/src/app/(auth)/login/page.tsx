@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -19,6 +19,25 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Reset form and subscribe to auth state changes on mount
+  useEffect(() => {
+    setEmail("");
+    setPassword("");
+    setError(null);
+
+    const supabase = createClient();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event: any, session: any) => {
+      if (event === "SIGNED_IN" && session) {
+        console.log("[login-redirect]");
+        router.replace("/dashboard");
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [router]);
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,6 +71,9 @@ export default function LoginPage() {
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
+        queryParams: {
+          prompt: "select_account",
+        },
       },
     });
 
@@ -112,7 +134,7 @@ export default function LoginPage() {
           </div>
 
           {/* Email/Password form */}
-          <form onSubmit={handleEmailLogin} className="space-y-4">
+          <form onSubmit={handleEmailLogin} className="space-y-4" autoComplete="off">
             <div className="space-y-2">
               <Label htmlFor="email" className="text-sm font-medium">
                 Email
@@ -127,6 +149,7 @@ export default function LoginPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   className="pl-10 py-5 bg-input/50 border-border/30 focus:border-primary/50 transition-colors"
                   required
+                  autoComplete="off"
                 />
               </div>
             </div>
@@ -145,6 +168,7 @@ export default function LoginPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   className="pl-10 pr-10 py-5 bg-input/50 border-border/30 focus:border-primary/50 transition-colors"
                   required
+                  autoComplete="new-password"
                 />
                 <button
                   type="button"

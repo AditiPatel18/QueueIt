@@ -7,7 +7,9 @@ import { NextResponse, type NextRequest } from "next/server";
  */
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
-    request,
+    request: {
+      headers: request.headers,
+    },
   });
 
   const supabase = createServerClient(
@@ -22,8 +24,13 @@ export async function updateSession(request: NextRequest) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           );
+          const requestHeaders = new Headers(request.headers);
+          const cookiesList = request.cookies.getAll().map(c => `${c.name}=${c.value}`).join('; ');
+          requestHeaders.set('cookie', cookiesList);
           supabaseResponse = NextResponse.next({
-            request,
+            request: {
+              headers: requestHeaders,
+            },
           });
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options)
@@ -38,6 +45,8 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
+  console.log(`[middleware] Path: ${request.nextUrl.pathname}, User: ${user ? user.email : "null"}`);
+
   // Protect dashboard routes — redirect to login if not authenticated
   if (
     !user &&
@@ -45,6 +54,7 @@ export async function updateSession(request: NextRequest) {
   ) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
+    console.log(`[middleware] Guard redirect to login from: ${request.nextUrl.pathname}`);
     return NextResponse.redirect(url);
   }
 
@@ -56,6 +66,7 @@ export async function updateSession(request: NextRequest) {
   ) {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
+    console.log(`[middleware] Authenticated redirect to dashboard from: ${request.nextUrl.pathname}`);
     return NextResponse.redirect(url);
   }
 

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -46,8 +47,7 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   // Support both ?item= (reminder emails) and ?item_id= (legacy deep-links)
   const queryItemId = searchParams?.get("item") || searchParams?.get("item_id");
-  const [user, setUser] = useState<SupabaseUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { user, loading } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
 
@@ -69,18 +69,6 @@ function DashboardContent() {
 
   // Folders filtering state
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const getUser = async () => {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      setUser(user);
-      setLoading(false);
-    };
-    getUser();
-  }, []);
 
   const handleLogout = async () => {
     setLoggingOut(true);

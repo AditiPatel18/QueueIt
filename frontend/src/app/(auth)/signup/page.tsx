@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -21,6 +21,15 @@ export default function SignUpPage() {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  // Reset form on mount and disable autofill persistence
+  useEffect(() => {
+    setFullName("");
+    setEmail("");
+    setPassword("");
+    setError(null);
+    setSuccess(false);
+  }, []);
 
   const passwordChecks = [
     { label: "At least 6 characters", met: password.length >= 6 },
@@ -71,6 +80,9 @@ export default function SignUpPage() {
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
+        queryParams: {
+          prompt: "select_account",
+        },
       },
     });
 
@@ -148,7 +160,7 @@ export default function SignUpPage() {
           </div>
 
           {/* Email/Password form */}
-          <form onSubmit={handleSignUp} className="space-y-4">
+          <form onSubmit={handleSignUp} className="space-y-4" autoComplete="off">
             <div className="space-y-2">
               <Label htmlFor="fullName" className="text-sm font-medium">
                 Full Name
@@ -162,6 +174,7 @@ export default function SignUpPage() {
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   className="pl-10 py-5 bg-input/50 border-border/30 focus:border-primary/50 transition-colors"
+                  autoComplete="off"
                 />
               </div>
             </div>
@@ -180,6 +193,7 @@ export default function SignUpPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   className="pl-10 py-5 bg-input/50 border-border/30 focus:border-primary/50 transition-colors"
                   required
+                  autoComplete="off"
                 />
               </div>
             </div>
@@ -198,6 +212,7 @@ export default function SignUpPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   className="pl-10 pr-10 py-5 bg-input/50 border-border/30 focus:border-primary/50 transition-colors"
                   required
+                  autoComplete="new-password"
                 />
                 <button
                   type="button"
