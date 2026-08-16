@@ -1,408 +1,146 @@
-# 🚀 QueueIt
+# QueueIt
 
 <p align="center">
   <img src="https://img.shields.io/badge/Next.js-15-black?logo=next.js" />
-  <img src="https://img.shields.io/badge/FastAPI-0.115-green?logo=fastapi" />
-  <img src="https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?logo=supabase" />
-  <img src="https://img.shields.io/badge/Google-Gemini_AI-blue?logo=google" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react" />
+  <img src="https://img.shields.io/badge/TypeScript-5-blue?logo=typescript" />
+  <img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi" />
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python" />
+  <img src="https://img.shields.io/badge/PostgreSQL-Supabase-3ECF8E?logo=postgresql" />
+  <img src="https://img.shields.io/badge/AI-Google%20Gemini-4285F4?logo=google" />
   <img src="https://img.shields.io/badge/License-MIT-yellow" />
 </p>
 
 <p align="center">
-<b>AI-Powered Knowledge Management Platform</b><br>
-Save • Organize • Summarize • Learn
+  <strong>AI-Powered Knowledge Management & Content Queue Platform</strong>
+</p>
+
+<p align="center">
+  Save knowledge. Understand it faster. Know what to learn next.
 </p>
 
 ---
 
-# 📖 Overview
+## Overview
 
-QueueIt is an AI-powered knowledge management platform that transforms bookmarks into an intelligent learning system.
+**QueueIt** is an AI-powered knowledge management platform designed to solve a common problem: people save large amounts of useful content but rarely return to consume it.
 
-Instead of saving hundreds of links that are never revisited, QueueIt automatically extracts content from articles, YouTube videos, PDFs, GitHub repositories and web pages, generates AI-powered summaries, estimates reading time, organizes content into collections, and recommends what to learn next.
+QueueIt turns saved content into an intelligent learning queue.
 
-The goal is to help users consume knowledge efficiently rather than merely collecting links.
+Users can save YouTube videos, articles, webpages, PDFs, GitHub repositories and other resources. QueueIt extracts the available content, processes it with AI, generates meaningful summaries and tags, estimates reading time, tracks learning progress, and recommends what the user should consume next.
 
----
-
-# ✨ Highlights
-
-- 🤖 AI-generated short & detailed summaries
-- 🎥 YouTube transcript extraction
-- 📄 PDF & webpage content extraction
-- 🧠 Semantic search using vector embeddings
-- 💬 AI Chat with saved knowledge
-- 📚 Collections & folders
-- 🏷 Automatic AI tagging
-- ⏱ Reading time estimation
-- 📊 Reading analytics dashboard
-- 📈 Progress tracking
-- 🎯 AI recommendation engine
-- 🌐 Chrome Extension support
+The platform combines **content extraction, AI processing, semantic search, personalized recommendations, analytics, reminders, and browser-based content capture** into a single system.
 
 ---
 
-# 🚀 Features
+## Key Features
 
-## Content Ingestion
+### Intelligent Content Ingestion
 
-- Save Articles
-- Save YouTube Videos
-- Save GitHub Repositories
+- Save YouTube videos
+- Save articles and webpages
 - Save PDFs
-- Save Blogs
-- Browser Extension
-- Automatic Metadata Extraction
+- Save GitHub repositories
+- Browser extension for one-click saving
+- Automatic metadata extraction
+- Duplicate content detection
+- Content type detection
+- Content processing pipeline
 
----
+### AI-Powered Understanding
 
-## AI Features
+- AI-generated concise summaries
+- Detailed AI summaries based on the complete extracted content
+- Automatic tag generation
+- Smart content categorization
+- Priority scoring
+- Personalized recommendations
+- Semantic search using embeddings
+- AI Chat over saved knowledge
 
-- AI Short Summary
-- AI Detailed Summary
-- Smart Tag Generation
-- Automatic Categorization
-- Priority Scoring
-- AI Recommendations
-- Reading Time Estimation
-- Semantic Embeddings
-- AI Chat over Saved Knowledge
+### Knowledge Organization
 
----
-
-## Knowledge Management
-
-- Collections
-- Folder Organization
+- Collections and folders
 - Favorites
-- Read Later
-- Search
-- Filters
-- Progress Tracking
-- Reading History
+- Search and filtering
+- Content type filters
+- Reading status management
+- Reading history
+- Automatic organization
+- Restore and delete functionality
+
+### Reading & Progress Tracking
+
+- Estimated reading time
+- Reading progress tracking
+- Unread / Reading / Completed states
+- Completion history
+- Reading statistics
+- Completion streaks
+
+### Smart Reminders
+
+- Schedule reading reminders
+- Email notifications
+- Reminder history
+- Scheduled reminder processing
+- Personalized reading recommendations
+- Direct "Read Now" links to saved content
+- Duplicate notification prevention
+
+### Analytics
+
+- Total saved content
+- Completed content
+- Reading progress
+- Time spent reading
+- Completion statistics
+- Content distribution
+- Reading streaks
+- Personalized recommendations
 
 ---
 
-## Dashboard
-
-- Queue Statistics
-- Estimated Reading Time
-- Reading Progress
-- AI Recommended Next Item
-- Analytics
-- Category Distribution
-
----
-
-# 🏗 System Architecture
+# System Architecture
 
 ```text
-                 Chrome Extension
-                        │
-                        ▼
-                Next.js Frontend
-                        │
-                   REST API
-                        │
-                        ▼
-                 FastAPI Backend
-                        │
- ┌─────────────────────────────────────────┐
- │          Content Processing             │
- │                                         │
- │  • Web Extractor                        │
- │  • YouTube Extractor                    │
- │  • PDF Extractor                        │
- │  • GitHub Extractor                     │
- └─────────────────────────────────────────┘
-                        │
-                        ▼
-               Google Gemini AI
-          ├── Short Summary
-          ├── Detailed Summary
-          ├── Smart Tags
-          ├── Priority Score
-          └── Recommendations
-                        │
-                        ▼
-              Vector Embeddings
-                        │
-                        ▼
-             Supabase PostgreSQL
-                        │
-                        ▼
-                  User Dashboard
-```
-
----
-
-# 🤖 AI Pipeline
-
-```text
-User Saves URL
-      │
-      ▼
-Extract Content
-      │
-      ▼
-Clean & Process Text
-      │
-      ▼
-Generate Embeddings
-      │
-      ▼
-Gemini AI
- ├── Summary
- ├── Detailed Summary
- ├── Tags
- ├── Category
- ├── Recommendation
- └── Priority
-      │
-      ▼
-Store in Supabase
-      │
-      ▼
-Display on Dashboard
-```
-
----
-
-# 🛠 Tech Stack
-
-## Frontend
-
-- Next.js 15
-- React
-- TypeScript
-- Tailwind CSS
-- SWR
-- Framer Motion
-
-## Backend
-
-- FastAPI
-- Python
-- Pydantic
-- AsyncIO
-
-## Database
-
-- Supabase PostgreSQL
-
-## AI
-
-- Google Gemini API
-- Vector Embeddings
-
-## Authentication
-
-- Supabase Auth
-
----
-
-# 📂 Project Structure
-
-```text
-QueueIt
-│
-├── frontend
-│   ├── app
-│   ├── components
-│   ├── hooks
-│   ├── lib
-│   └── types
-│
-├── backend
-│   ├── api
-│   ├── services
-│   ├── models
-│   ├── schemas
-│   ├── utils
-│   └── static
-│
-├── extension
-│
-├── migrations
-│
-└── README.md
-```
-
----
-
-# ⚡ Performance Optimizations
-
-- Asynchronous FastAPI backend
-- Background AI processing
-- Vector embedding search
-- SWR client-side caching
-- Lazy loading
-- Incremental AI generation
-- Optimized database queries
-
----
-
-# 🚀 Local Setup
-
-## Clone Repository
-
-```bash
-git clone https://github.com/AditiPatel18/QueueIt.git
-
-cd QueueIt
-```
-
----
-
-## Backend
-
-```bash
-cd backend
-
-python -m venv venv
-
-venv\Scripts\activate
-
-pip install -r requirements.txt
-
-uvicorn main:app --reload
-```
-
----
-
-## Frontend
-
-```bash
-cd frontend
-
-npm install
-
-npm run dev
-```
-
----
-
-# 🔑 Environment Variables
-
-Backend
-
-```env
-SUPABASE_URL=
-
-SUPABASE_ANON_KEY=
-
-SUPABASE_SERVICE_ROLE_KEY=
-
-SUPABASE_JWT_SECRET=
-
-GEMINI_API_KEY=
-```
-
-Frontend
-
-```env
-NEXT_PUBLIC_SUPABASE_URL=
-
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-```
-
----
-
-# 📊 Current Capabilities
-
-- ✅ Authentication
-- ✅ Browser Extension
-- ✅ AI Summaries
-- ✅ Detailed AI Summaries
-- ✅ Automatic Tagging
-- ✅ Smart Categorization
-- ✅ Reading Time Estimation
-- ✅ AI Recommendations
-- ✅ Collections
-- ✅ Reading History
-- ✅ Progress Tracking
-- ✅ Analytics Dashboard
-- ✅ Semantic Search
-- ✅ AI Chat
-
----
-
-# 🎯 Skills Demonstrated
-
-- Full Stack Development
-- REST API Design
-- Authentication & Authorization
-- AI Integration
-- Prompt Engineering
-- Background Processing
-- Database Design
-- Vector Search
-- React
-- Next.js
-- FastAPI
-- TypeScript
-- Python
-- PostgreSQL
-- Supabase
-
----
-
-# 🔮 Future Roadmap
-
-- Mobile Application
-- OCR Support
-- AI Flashcards
-- AI Quiz Generation
-- Offline Reading
-- Team Collaboration
-- Calendar Integration
-- Notion Import
-- Firefox Extension
-- Chrome Web Store Release
-
----
-
-# 📷 Screenshots
-
-Add screenshots for:
-
-- Login Page
-- Dashboard
-- Queue
-- AI Summary
-- History
-- Analytics
-- Chat
-- Browser Extension
-
----
-
-# 👨‍💻 Author
-
-**Aditi Patel**
-
-B.Tech Information Technology
-
-Interested in AI, Full Stack Development, Backend Engineering and Intelligent Knowledge Systems.
-
-GitHub: https://github.com/AditiPatel18
-
----
-
-# ⭐ Support
-
-If you found this project useful,
-
-⭐ Star the repository
-
-🍴 Fork the repository
-
-💡 Open an issue
-
-🤝 Contributions are welcome!
-
----
-
-# 📄 License
-
-This project is licensed under the MIT License.
+                         ┌─────────────────────┐
+                         │   Chrome Extension  │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Next.js Frontend                     │
+│                                                         │
+│ React • TypeScript • Tailwind CSS • SWR • Framer Motion │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+                       REST APIs
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│                    FastAPI Backend                      │
+│                                                         │
+│ Authentication • Content APIs • Search • Analytics      │
+│ Reminders • AI Services • Background Processing         │
+└───────────────┬─────────────────────┬───────────────────┘
+                │                     │
+                ▼                     ▼
+      ┌─────────────────┐   ┌──────────────────────┐
+      │ Content         │   │ Google Gemini AI     │
+      │ Processing      │   │                      │
+      │                 │   │ • Summaries          │
+      │ • YouTube       │   │ • Tags               │
+      │ • Webpages      │   │ • Classification     │
+      │ • PDFs          │   │ • Recommendations    │
+      │ • GitHub        │   │ • Priority            │
+      └────────┬────────┘   └──────────┬───────────┘
+               │                       │
+               └───────────┬───────────┘
+                           ▼
+                 ┌─────────────────────┐
+                 │ Supabase PostgreSQL  │
+                 │                     │
+                 │ Auth + Application  │
+                 │ Data + Embeddings   │
+                 └─────────────────────┘
