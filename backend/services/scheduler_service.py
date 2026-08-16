@@ -213,11 +213,12 @@ async def dispatch_and_update(dispatch_service, rem_id, user_id, title, retry_co
         log_entry = f"{now_str}: {sentinel}Attempt {new_retry} failed: {display_msg or error_msg}"
         logs.append(log_entry)
         
+        clean_error = "Unable to send email reminder."
         if new_retry < MAX_RETRY_COUNT:
-            # Go back to 'pending' for immediate retry on next worker tick (with backoff)
+            # Go back to 'failed' (or pending) for immediate retry on next worker tick (with backoff)
             cursor.execute(
                 "UPDATE local_reminder_history SET status = 'failed', retry_count = ?, error_message = ?, delivery_logs = ? WHERE id = ?",
-                (new_retry, display_msg or error_msg, json.dumps(logs), rem_id)
+                (new_retry, clean_error, json.dumps(logs), rem_id)
             )
             logger.warning(
                 f"[Worker] ⚠️ Reminder {rem_id} failed attempt {new_retry}/{MAX_RETRY_COUNT}. "
@@ -227,7 +228,7 @@ async def dispatch_and_update(dispatch_service, rem_id, user_id, title, retry_co
             # Max retries exhausted — permanently failed
             cursor.execute(
                 "UPDATE local_reminder_history SET status = 'failed', retry_count = ?, error_message = ?, delivery_logs = ? WHERE id = ?",
-                (new_retry, display_msg or error_msg, json.dumps(logs), rem_id)
+                (new_retry, clean_error, json.dumps(logs), rem_id)
             )
             logger.error(
                 f"[Worker] ❌ Reminder {rem_id} permanently failed after {new_retry}/{MAX_RETRY_COUNT} attempts. "

@@ -108,44 +108,86 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 2. Fetch auth token from localhost cookies
     const getAuthToken = async () => {
         return new Promise((resolve) => {
+            const urls = ["http://localhost:3000", "http://127.0.0.1:3000"];
+            let urlIndex = 0;
 
-            chrome.cookies.getAll({}, (cookies) => {
-
-                const authCookie = cookies.find(
-                    c => c.name === "sb-xgifnzhpfexksoxavcyc-auth-token"
-                );
-
-                if (!authCookie) {
-                    console.error("Auth cookie not found");
+            function fetchFromCookies() {
+                if (urlIndex >= urls.length) {
+                    console.error("Auth token cookie not found on any URL");
                     return resolve(null);
                 }
 
-                try {
-                    let value = authCookie.value;
-
-                    if (value.startsWith("base64-")) {
-                        value = atob(value.substring(7));
+                const targetUrl = urls[urlIndex++];
+                chrome.cookies.getAll({ url: targetUrl }, (cookies) => {
+                    if (chrome.runtime.lastError || !cookies || cookies.length === 0) {
+                        fetchFromCookies();
+                        return;
                     }
 
-                    const parsed = JSON.parse(value);
+                    // Look for Supabase auth token cookie (supports sb-*-auth-token or sb-access-token)
+                    const authCookies = cookies.filter(
+                        c => c.name && (c.name.includes("-auth-token") || c.name.includes("sb-") || c.name.includes("token"))
+                    );
 
-                    if (parsed.access_token) {
-                        console.log("Access token extracted");
-                        console.log("TOKEN:", parsed.access_token);
-                        return resolve(parsed.access_token);
+                    if (authCookies.length === 0) {
+                        fetchFromCookies();
+                        return;
                     }
 
-                    console.error("No access token found");
-                    resolve(null);
+                    try {
+                        // Sort cookies if split (with .0, .1 suffixes)
+                        authCookies.sort((a, b) => {
+                            const aSuffix = a.name.split('.').pop();
+                            const bSuffix = b.name.split('.').pop();
+                            const aNum = isNaN(aSuffix) ? -1 : parseInt(aSuffix, 10);
+                            const bNum = isNaN(bSuffix) ? -1 : parseInt(bSuffix, 10);
+                            return aNum - bNum;
+                        });
 
-                } catch (err) {
-                    console.error("Token parse error:", err);
-                    resolve(null);
-                }
-            });
+                        let value = authCookies.map(c => c.value).join('');
+                        if (value.startsWith("base64-")) {
+                            value = atob(value.substring(7));
+                        } else {
+                            try {
+                                value = decodeURIComponent(value);
+                            } catch { /* non-fatal */ }
+                        }
 
+                        let token = null;
+                        if (value.startsWith("eyJ")) {
+                            token = value;
+                        } else {
+                            try {
+                                const parsed = JSON.parse(value);
+                                if (Array.isArray(parsed)) {
+                                    token = parsed[0];
+                                } else if (parsed && parsed.access_token) {
+                                    token = parsed.access_token;
+                                }
+                            } catch {
+                                if (value.includes("eyJ")) {
+                                    const match = value.match(/eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+/);
+                                    if (match) token = match[0];
+                                }
+                            }
+                        }
+
+                        if (token) {
+                            console.log("Access token extracted successfully from " + targetUrl);
+                            return resolve(token);
+                        }
+                        fetchFromCookies();
+                    } catch (err) {
+                        console.error("Token parse error for " + targetUrl + ":", err);
+                        fetchFromCookies();
+                    }
+                });
+            }
+
+            fetchFromCookies();
         });
     };
+
     // 3. Handle save
     saveBtn.addEventListener('click', async () => {
         saveBtn.disabled = true;
@@ -159,7 +201,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
-            const response = await fetch("http://localhost:8000/api/items", {
+            const response = await fetch("http://localhost:8001/api/items", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",

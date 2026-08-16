@@ -313,7 +313,7 @@ def ensure_summary(item: dict) -> dict:
     
     try:
         if not resolved_content:
-            summary = "Summary could not be generated."
+            summary = "Summary is still being generated."
             print(f"[PIPELINE LOG] [ensure_summary] No valid content for summary.")
         else:
             ai = get_ai_service()
@@ -409,12 +409,12 @@ def ensure_summary(item: dict) -> dict:
             try:
                 print(f"[PIPELINE LOG] [Database] [ensure_summary] Updating DB with failed status...")
                 update_data = {
-                    "ai_summary": "Summary could not be generated.",
+                    "ai_summary": "Summary is still being generated.",
                     "processing_status": "failed",
                     "extracted_text": extracted_text_val or resolved_content
                 }
                 supabase.table("items").update(update_data).eq("id", item.get("id")).execute()
-                item["ai_summary"] = "Summary could not be generated."
+                item["ai_summary"] = "Summary is still being generated."
                 item["processing_status"] = "failed"
                 print(f"[PIPELINE LOG] [Database] [ensure_summary] DB updated to 'failed' successfully.")
             except Exception as db_err:
@@ -964,6 +964,8 @@ async def _run_background_extraction_and_enrichment_impl(
         full_summary = "AI summary will be generated automatically after quota reset."
     elif summary in ("Transcript unavailable", "Summary could not be generated.", None, ""):
         processing_status = "failed"
+        summary = "Summary unavailable."
+        full_summary = "Summary unavailable."
         
     print(f"[PIPELINE LOG] [Stage Transition] {item_id}: processing -> {processing_status}")
     print(f"[PIPELINE LOG] [Stage Transition] Processing -> {processing_status.capitalize() if processing_status != 'pending_quota' else 'PendingQuota'}")
@@ -1065,6 +1067,10 @@ async def _run_background_extraction_and_enrichment_impl(
     )
     print(f"[PIPELINE LOG] Ingestion pipeline finished with status: {processing_status}")
 
+    # Raise exception if failed to trigger background retry loop
+    if processing_status == "failed":
+        raise RuntimeError("AI Ingestion pipeline failed to generate summary")
+
 
 async def run_background_extraction_and_enrichment(
     item_id: str,
@@ -1079,45 +1085,48 @@ async def run_background_extraction_and_enrichment(
         return
 
     async with lock:
-        try:
-            await asyncio.wait_for(
-                _run_background_extraction_and_enrichment_impl(item_id, clean_url, user_id, title_override),
-                timeout=60.0
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"[INGESTION] Pipeline timed out (>60s) for item {item_id}")
-            print(f"[INGESTION] Pipeline timed out (>60s) for item {item_id}")
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             try:
-                # Safe DB update to failed status so the UI is updated immediately
-                await asyncio.to_thread(
-                    lambda: supabase.table("items").update({
-                        "processing_status": "failed",
-                        "ai_summary": "Failed to generate summary: Ingestion pipeline timed out after 60 seconds"
-                    }).eq("id", item_id).execute()
+                logger.info(f"[INGESTION] Starting attempt {attempt}/{max_attempts} for item {item_id}")
+                print(f"[INGESTION] Starting attempt {attempt}/{max_attempts} for item {item_id}")
+                
+                await asyncio.wait_for(
+                    _run_background_extraction_and_enrichment_impl(item_id, clean_url, user_id, title_override),
+                    timeout=60.0
                 )
-                update_ingestion_debug(item_id, "failed", "Ingestion pipeline failed: Timeout after 60 seconds")
-                print(f"[PIPELINE LOG] [Stage Transition] {item_id}: processing -> failed (Timeout)")
-                print(f"[PIPELINE LOG] [Stage Transition] Processing -> Failed")
-            except Exception as db_err:
-                logger.error(f"Failed to update failed status in DB for item {item_id}: {db_err}")
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            logger.error(f"[INGESTION] Pipeline crashed for item {item_id}: {e}\n{tb}")
-            print(f"[INGESTION] Pipeline crashed for item {item_id}: {e}\n{tb}")
-            try:
-                # Safe DB update to failed status so the UI is updated immediately
-                await asyncio.to_thread(
-                    lambda: supabase.table("items").update({
-                        "processing_status": "failed",
-                        "ai_summary": f"Failed to generate summary: {str(e)}"
-                    }).eq("id", item_id).execute()
-                )
-                update_ingestion_debug(item_id, "failed", f"Ingestion pipeline failed: {e}", error=tb)
-                print(f"[PIPELINE LOG] [Stage Transition] {item_id}: processing -> failed (Crash)")
-                print(f"[PIPELINE LOG] [Stage Transition] Processing -> Failed")
-            except Exception as db_err:
-                logger.error(f"Failed to update failed status in DB for item {item_id}: {db_err}")
+                logger.info(f"[INGESTION] Attempt {attempt}/{max_attempts} succeeded for item {item_id}")
+                print(f"[INGESTION] Attempt {attempt}/{max_attempts} succeeded for item {item_id}")
+                break
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                logger.error(f"[INGESTION] Attempt {attempt}/{max_attempts} failed for item {item_id}: {e}\n{tb}")
+                print(f"[INGESTION] Attempt {attempt}/{max_attempts} failed for item {item_id}: {e}")
+                
+                if attempt < max_attempts:
+                    logger.info(f"[INGESTION] Retrying in 3 seconds...")
+                    print(f"[INGESTION] Retrying in 3 seconds...")
+                    await asyncio.sleep(3.0)
+                else:
+                    logger.error(f"[INGESTION] All {max_attempts} attempts failed for item {item_id}")
+                    print(f"[INGESTION] All {max_attempts} attempts failed for item {item_id}")
+                    try:
+                        # Safe DB update to failed status so the UI is updated immediately
+                        _failed_payload: dict = {
+                            "processing_status": "failed",
+                            "ai_summary": "Summary unavailable.",
+                        }
+                        if fallback_db.has_full_summary:
+                            _failed_payload["full_summary"] = "Summary unavailable."
+                        await asyncio.to_thread(
+                            lambda: supabase.table("items").update(_failed_payload).eq("id", item_id).execute()
+                        )
+                        update_ingestion_debug(item_id, "failed", f"Ingestion pipeline failed after {max_attempts} attempts.", error=tb)
+                        print(f"[PIPELINE LOG] [Stage Transition] {item_id}: processing -> failed (Crash/Timeout)")
+                        print(f"[PIPELINE LOG] [Stage Transition] Processing -> Failed")
+                    except Exception as db_err:
+                        logger.error(f"Failed to update failed status in DB for item {item_id}: {db_err}")
 
 
 async def recover_processing_items():
@@ -1158,10 +1167,13 @@ async def recover_processing_items():
             
             if is_stale:
                 print(f"[RECOVERY] Item {item_id} has been processing for >10 mins. Marking as failed.")
-                supabase.table("items").update({
+                failed_update: dict = {
                     "processing_status": "failed",
-                    "ai_summary": "Summary could not be generated."
-                }).eq("id", item_id).execute()
+                    "ai_summary": "Summary unavailable.",
+                }
+                if fallback_db.has_full_summary:
+                    failed_update["full_summary"] = "Summary unavailable."
+                supabase.table("items").update(failed_update).eq("id", item_id).execute()
             else:
                 print(f"[RECOVERY] Resuming AI processing for item {item_id}...")
                 asyncio.create_task(
@@ -1178,11 +1190,11 @@ async def recover_processing_items():
 
 
 async def run_quota_retry_task():
-    logger.info("[SCHEDULER] Fetching all items in pending_quota state...")
-    print("[PIPELINE LOG] [SCHEDULER] Fetching all items in pending_quota state...")
+    logger.info("[SCHEDULER] Fetching all items in pending_quota or failed state...")
+    print("[PIPELINE LOG] [SCHEDULER] Fetching all items in pending_quota or failed state...")
     try:
         res = await asyncio.to_thread(
-            lambda: supabase.table("items").select("*").eq("processing_status", "pending_quota").execute()
+            lambda: supabase.table("items").select("*").in_("processing_status", ["pending_quota", "failed"]).execute()
         )
         items = res.data or []
         logger.info(f"[SCHEDULER] Found {len(items)} items to retry.")
@@ -1193,6 +1205,7 @@ async def run_quota_retry_task():
             url = item.get("url")
             user_id = item.get("user_id")
             title = item.get("title")
+            status_before = item.get("processing_status") or "failed"
             
             logger.info(f"[SCHEDULER] Retrying AI summary generation for item {item_id}...")
             print(f"[PIPELINE LOG] [SCHEDULER] Retrying AI summary generation for item {item_id}...")
@@ -1206,8 +1219,8 @@ async def run_quota_retry_task():
             async with lock:
                 try:
                     # Transition to processing for stage transition logging
-                    print(f"[PIPELINE LOG] [Stage Transition] {item_id}: pending_quota -> processing")
-                    print(f"[PIPELINE LOG] [Stage Transition] PendingQuota -> Processing")
+                    print(f"[PIPELINE LOG] [Stage Transition] {item_id}: {status_before} -> processing")
+                    print(f"[PIPELINE LOG] [Stage Transition] {status_before.capitalize()} -> Processing")
                     await asyncio.to_thread(
                         lambda: supabase.table("items").update({
                             "processing_status": "processing"
@@ -1228,26 +1241,27 @@ async def run_quota_retry_task():
                     if status_after == "completed":
                         print(f"[PIPELINE LOG] [SCHEDULER] Success for item {item_id}!")
                     else:
-                        print(f"[PIPELINE LOG] [SCHEDULER] Item {item_id} did not complete successfully (status: {status_after}). Keeping as pending_quota.")
-                        await asyncio.to_thread(
-                            lambda: supabase.table("items").update({
-                                "processing_status": "pending_quota",
-                                "ai_summary": "AI summary will be generated automatically after quota reset."
-                            }).eq("id", item_id).execute()
-                        )
-                        print(f"[PIPELINE LOG] [Stage Transition] {item_id}: processing -> pending_quota (Retry Keep Pending)")
-                        print(f"[PIPELINE LOG] [Stage Transition] Processing -> PendingQuota")
+                        print(f"[PIPELINE LOG] [SCHEDULER] Item {item_id} did not complete successfully (status: {status_after}).")
                 except Exception as e:
                     logger.error(f"[SCHEDULER] Failed to process item {item_id}: {e}")
                     print(f"[PIPELINE LOG] [SCHEDULER] Failed to process item {item_id}: {e}")
+                    err_str = str(e)
+                    is_quota = ("GenerateRequestsPerDayPerProjectPerModel" in err_str or 
+                                "generate_content_free_tier_requests" in err_str or 
+                                "Quota exceeded" in err_str or
+                                "429" in err_str)
+                    target_status = "pending_quota" if is_quota else "failed"
+                    target_summary = "AI summary will be generated automatically after quota reset." if is_quota else "Summary unavailable."
+                    
                     await asyncio.to_thread(
                         lambda: supabase.table("items").update({
-                            "processing_status": "pending_quota",
-                            "ai_summary": "AI summary will be generated automatically after quota reset."
+                            "processing_status": target_status,
+                            "ai_summary": target_summary,
+                            "full_summary": target_summary
                         }).eq("id", item_id).execute()
                     )
-                    print(f"[PIPELINE LOG] [Stage Transition] {item_id}: processing -> pending_quota (Retry Failed Exception)")
-                    print(f"[PIPELINE LOG] [Stage Transition] Processing -> PendingQuota")
+                    print(f"[PIPELINE LOG] [Stage Transition] {item_id}: processing -> {target_status} (Retry Failed Exception)")
+                    print(f"[PIPELINE LOG] [Stage Transition] Processing -> {target_status.capitalize() if target_status != 'pending_quota' else 'PendingQuota'}")
     except Exception as e:
         logger.error(f"[SCHEDULER] Error in run_quota_retry_task: {e}")
 
@@ -1847,32 +1861,6 @@ async def get_history_stats(user: dict = Depends(get_current_user)):
         logger.error("Failed to compute history stats: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
 
-
-# ---------------------------------------------------------------------------
-# GET /api/items/{item_id} — Single item
-# ---------------------------------------------------------------------------
-
-@router.get("/{item_id}")
-async def get_item(item_id: str, user_id: str = Depends(get_user_id)):
-    try:
-        result = await asyncio.to_thread(
-            lambda: supabase.table("items")
-            .select("*")
-            .eq("id", item_id)
-            .eq("user_id", user_id)
-            .execute()
-        )
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Item not found")
-        item = item_to_response(result.data[0])
-        item = fallback_db.merge_single_item_metadata(user_id, item)
-        fallback_db.record_item_open(user_id, item_id)
-
-        return item
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{item_id}/audio-summary")
 async def generate_audio_summary(item_id: str, user_id: str = Depends(get_user_id)):
@@ -3089,4 +3077,34 @@ async def get_user_streak_heatmap(user: dict = Depends(get_current_user)):
         return StreakService.get_streak_heatmap(user_id)
     except Exception as e:
         logger.error(f"Failed to get streak heatmap: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/items/{item_id} — Single item
+# IMPORTANT: This wildcard route MUST remain last among GET routes so that
+# specific paths like /user/streak, /analytics/reading, /recommendations/next
+# are matched first and not swallowed as item IDs.
+# ---------------------------------------------------------------------------
+
+@router.get("/{item_id}")
+async def get_item(item_id: str, user_id: str = Depends(get_user_id)):
+    try:
+        result = await asyncio.to_thread(
+            lambda: supabase.table("items")
+            .select("*")
+            .eq("id", item_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Item not found")
+        item = item_to_response(result.data[0])
+        item = fallback_db.merge_single_item_metadata(user_id, item)
+        fallback_db.record_item_open(user_id, item_id)
+
+        return item
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

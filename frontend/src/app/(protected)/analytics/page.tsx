@@ -823,76 +823,7 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* 4. Bottom: Most Viewed + AI Topics */}
-        <div className="grid gap-6 md:grid-cols-2">
 
-          {/* Most Viewed Categories */}
-          <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <Eye className="h-4 w-4 text-primary" />
-                <h3 className="text-base font-bold text-foreground">Most Viewed Categories</h3>
-              </div>
-
-              <div className="divide-y divide-border/10">
-                {most_viewed_categories.map((cat: any, idx: number) => (
-                  <div key={idx} className="flex justify-between items-center py-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="flex h-5 w-5 items-center justify-center rounded bg-primary/10 text-primary text-[10px] font-bold">
-                        {idx + 1}
-                      </div>
-                      <span className="text-xs font-semibold text-foreground">{cat.category}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground font-bold">{cat.views} opens</span>
-                  </div>
-                ))}
-
-                {most_viewed_categories.length === 0 && (
-                  <div className="py-4 text-xs text-muted-foreground">No open events recorded.</div>
-                )}
-              </div>
-            </div>
-
-            <p className="text-[10px] text-muted-foreground mt-4 leading-normal">
-              Determined by items that you opened and reviewed in reader view or external links.
-            </p>
-          </div>
-
-          {/* Top AI Topics */}
-          <div className="glass p-6 rounded-2xl border border-border/15 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <Sparkles className="h-4 w-4 text-primary animate-pulse" />
-                <h3 className="text-base font-bold text-foreground">Top AI-Recommended Topics Read</h3>
-              </div>
-
-              <div className="flex flex-wrap gap-2.5 pt-2">
-                {top_ai_topics.map((t: any, idx: number) => (
-                  <div
-                    key={idx}
-                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-primary/20 bg-primary/10 text-[10px] font-bold text-primary hover:border-primary/45 transition-colors cursor-default"
-                  >
-                    <span>#{t.topic}</span>
-                    <span className="h-4 px-1 rounded-full bg-primary/20 flex items-center justify-center text-[8px] text-primary">
-                      {t.count}
-                    </span>
-                  </div>
-                ))}
-
-                {top_ai_topics.length === 0 && (
-                  <div className="py-4 text-xs text-muted-foreground w-full">
-                    No completed items matching recent AI recommendations. Continue read actions on recommendation list.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <p className="text-[10px] text-muted-foreground mt-4 leading-normal">
-              Most common tags extracted from completed items that were recommended to you by AI suggestions.
-            </p>
-          </div>
-
-        </div>
 
       </main>
 

@@ -372,20 +372,20 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
                 <Flame className="h-5 w-5 text-orange-500 animate-bounce" />
                 <div>
                   <p className="text-[10px] font-bold text-foreground">Current Streak</p>
-                  <p className="text-xs font-black text-orange-400">{gamification.current_streak} days</p>
+                  <p className="text-xs font-black text-orange-400">{gamification?.current_streak ?? 0} days</p>
                 </div>
               </div>
               <div className="text-right border-l border-border/10 pl-3">
                 <p className="text-[8px] text-muted-foreground font-semibold">Longest Streak</p>
-                <p className="text-[10px] font-bold text-foreground">{gamification.longest_streak} days</p>
+                <p className="text-[10px] font-bold text-foreground">{gamification?.longest_streak ?? 0} days</p>
               </div>
             </div>
 
             {/* Level & XP bar */}
             <div className="space-y-1.5">
               <div className="flex justify-between text-[10px]">
-                <span className="font-bold text-foreground">Level {gamification.level}</span>
-                <span className="text-muted-foreground font-semibold">{gamification.xp} / {gamification.xp_needed} XP</span>
+                <span className="font-bold text-foreground">Level {gamification?.level ?? 1}</span>
+                <span className="text-muted-foreground font-semibold">{gamification?.xp ?? 0} / {gamification?.xp_needed ?? 200} XP</span>
               </div>
               <div className="w-full bg-secondary/40 rounded-full h-2 overflow-hidden border border-border/10">
                 <div 
@@ -426,14 +426,14 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
                   Streak Freeze
                 </p>
                 <p className="text-[8px] text-muted-foreground leading-normal">
-                  {gamification.streak_freezes_available > 0 
+                  {(gamification?.streak_freezes_available ?? 0) > 0 
                     ? `${gamification.streak_freezes_available} freeze(s) available` 
                     : "0 freezes (1 automatically granted/week)"}
                 </p>
               </div>
               <Button
                 onClick={handleUseFreeze}
-                disabled={gamification.streak_freezes_available <= 0}
+                disabled={(gamification?.streak_freezes_available ?? 0) <= 0}
                 size="sm"
                 className="text-[9px] h-6.5 bg-orange-600 hover:bg-orange-700 text-white border-0 cursor-pointer disabled:opacity-50"
               >
@@ -444,9 +444,9 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
             {/* Unlocked Badges */}
             <div className="space-y-1.5">
               <p className="text-[10px] font-bold text-foreground">Unlocked Achievements</p>
-              {gamification.badges.length > 0 ? (
+              {(gamification?.badges?.length ?? 0) > 0 ? (
                 <div className="grid grid-cols-3 gap-1.5">
-                  {gamification.badges.map((badge: any) => (
+                  {(gamification?.badges || []).map((badge: any) => (
                     <div 
                       key={badge.id} 
                       className="p-1.5 rounded-xl bg-primary/5 border border-primary/10 flex flex-col items-center text-center space-y-1"

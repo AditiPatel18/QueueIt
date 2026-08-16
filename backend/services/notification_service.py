@@ -840,7 +840,7 @@ Manage Reminders: {dashboard_url}
 
             # Collect non-sentinel errors for upstream reporting
             if email_err and email_err != "[Email Sent]":
-                errors.append(email_err)
+                errors.append("Unable to send email reminder.")
                 
             # Send SMS
             sms_ok = True
@@ -906,4 +906,4 @@ Manage Reminders: {dashboard_url}
             return overall_success, err_msg
         except Exception as e:
             logger.error(f"Error in async notification dispatch for {user_id}: {e}", exc_info=True)
-            return False, f"Unexpected dispatch exception: {str(e)}"
+            return False, "Unable to send email reminder."

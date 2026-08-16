@@ -512,12 +512,12 @@ Rules:
             print(f"[PIPELINE LOG] [AI Service] gemini_success=true (full_summary) response_chars={len(full_text)}")
             if not full_text or len(full_text.strip()) < 100:
                 print(f"[DEBUG LOG] full_summary response too short ({len(full_text)} chars). Using fallback.")
-                return f"## Overview\n\nDetailed summary could not be generated for: {title}"
+                return "Summary unavailable."
             return full_text.strip()
         except Exception as e:
             logger.error(f"[AI Service] full_summary plain generation failed: {e}")
             print(f"[DEBUG LOG] full_summary plain generation failed: {e}")
-            return f"## Overview\n\nDetailed summary could not be generated: {e}"
+            return "Summary unavailable."
 
     def _retry_single_pass(self, content: str, content_type: str) -> dict:
         """Simpler retry: minimal JSON prompt + plain-text full_summary."""
@@ -715,43 +715,55 @@ CURRENT SUMMARY:
             return summary
 
     def _generate_independent_short_summary(self, title: str, content: str, content_type: str) -> str:
-        prompt = f"""You are an expert technical summarizer.
-Create a short, concise plain-text summary (2-3 sentences) of the following content.
+        prompt = f"""You are an expert technical knowledge summarizer.
+
+TASK:
+Analyze the ENTIRE extracted content below (from beginning, middle, to end). Write a genuine, highly informative summary representing the WHOLE material across 1 to 2 well-structured paragraphs (100 to 150 words total).
 
 TITLE: {title}
 TYPE: {content_type}
-CONTENT:
-{content[:8000]}
 
-Rules:
-- Write exactly 2-3 sentences.
-- Return plain text only. No markdown, no headings, no bullets.
+ACTUAL EXTRACTED CONTENT:
+{content[:60000]}
+
+CRITICAL SUMMARIZATION RULES:
+1. Whole-Content Synthesis: Identify the main topic, key concepts, core mechanisms, techniques, and conclusions covered throughout the entire material. Combine related ideas into a coherent, flowing summary.
+2. Do NOT summarize just the intro or first few lines: Do NOT follow transcript order or describe greetings, introductions, or setup. Focus on the main ideas and takeaways from the entire content.
+3. Length & Structure: Write 100 to 150 words total in 1 to 2 well-structured paragraphs.
+4. No Direct Copying: Rephrase and synthesize concepts in clear English. Do not copy sentences directly from the source.
+5. Strictly Prohibited Intros and Metalanguage: Do NOT mention that you are summarizing. Do NOT use phrases like "this video...", "this article...", "in this tutorial...", "the author...", "the speaker...", or "this content covers...". Start directly with the core subject knowledge.
+6. Zero Generic Filler: Omit greetings, repetition, non-essential examples, irrelevant details, and generic filler words like "essential concepts", "key principles", or "practical applications".
+7. Output Format: Return ONLY the final summary text (1-2 plain text paragraphs in clear English). Do not include markdown headers, titles, bullet points, preambles, or verification notes.
 """
         try:
-            return self._call_generative_model(prompt, len(content[:8000]))
+            return self._call_generative_model(prompt, len(content[:60000]))
         except Exception as e:
             logger.error(f"Independent short summary failed: {e}")
             raise e
 
     def _generate_independent_short_summary_distinct(self, title: str, content: str, content_type: str, full_summary: str) -> str:
-        prompt = f"""You are an expert technical summarizer.
-Create a short, concise plain-text summary (2-3 sentences) of the following content.
-Make sure the summary uses completely different phrasing and words from the detailed summary provided below to keep word overlap minimal.
+        prompt = f"""You are an expert technical knowledge summarizer.
+
+TASK:
+Analyze the ENTIRE extracted content below (from beginning, middle, to end). Write a genuine, highly informative summary representing the WHOLE material across 1 to 2 well-structured paragraphs (100 to 150 words total).
 
 TITLE: {title}
 TYPE: {content_type}
-CONTENT:
-{content[:8000]}
 
-DETAILED SUMMARY TO AVOID DUPLICATING:
-{full_summary[:1000]}
+ACTUAL EXTRACTED CONTENT:
+{content[:60000]}
 
-Rules:
-- Write exactly 2-3 sentences.
-- Return plain text only. No markdown, no headings, no bullets.
+CRITICAL SUMMARIZATION RULES:
+1. Whole-Content Synthesis: Identify the main topic, key concepts, core mechanisms, techniques, and conclusions covered throughout the entire material. Combine related ideas into a coherent, flowing summary.
+2. Do NOT summarize just the intro or first few lines: Do NOT follow transcript order or describe greetings, introductions, or setup. Focus on the main ideas and takeaways from the entire content.
+3. Length & Structure: Write 100 to 150 words total in 1 to 2 well-structured paragraphs.
+4. No Direct Copying: Rephrase and synthesize concepts in clear English. Do not copy sentences directly from the source.
+5. Strictly Prohibited Intros and Metalanguage: Do NOT mention that you are summarizing. Do NOT use phrases like "this video...", "this article...", "in this tutorial...", "the author...", "the speaker...", or "this content covers...". Start directly with the core subject knowledge.
+6. Zero Generic Filler: Omit greetings, repetition, non-essential examples, irrelevant details, and generic filler words like "essential concepts", "key principles", or "practical applications".
+7. Output Format: Return ONLY the final summary text (1-2 plain text paragraphs in clear English). Do not include markdown headers, titles, bullet points, preambles, or verification notes.
 """
         try:
-            return self._call_generative_model(prompt, len(content[:8000]))
+            return self._call_generative_model(prompt, len(content[:60000]))
         except Exception as e:
             logger.error(f"Distinct short summary failed: {e}")
             raise e

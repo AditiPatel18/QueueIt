@@ -497,7 +497,13 @@ class SchemaFallbackManager:
                 if needs_full_summary:
                     item["full_summary"] = local_meta.get("full_summary")
                 if needs_estimated_time_minutes:
-                    item["estimated_time_minutes"] = local_meta.get("estimated_time_minutes") if local_meta.get("estimated_time_minutes") is not None else 5.0
+                    local_est = local_meta.get("estimated_time_minutes")
+                    if local_est is not None:
+                        item["estimated_time_minutes"] = local_est
+                    elif item.get("estimated_read_time") is not None and float(item.get("estimated_read_time") or 0) > 0:
+                        item["estimated_time_minutes"] = float(item["estimated_read_time"])
+                    else:
+                        item["estimated_time_minutes"] = 5.0
                 if needs_actual_time_spent:
                     item["actual_time_spent"] = local_meta.get("actual_time_spent") if local_meta.get("actual_time_spent") is not None else 0.0
                     

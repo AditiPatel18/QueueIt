@@ -64,17 +64,18 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
     active_reminders: alertsData?.active_reminders || [],
     unread_count: alertsData?.unread_count ?? 0,
     history: historyData?.history || [],
-    gamification: gamificationData?.gamification || {
-      xp: 0,
-      level: 1,
-      xp_needed: 200,
-      streak_freezes_available: 0,
-      last_freeze_used_at: null,
-      daily_goal: 15,
-      current_streak: 0,
-      longest_streak: 0,
-      calendar: [],
-      badges: []
+    gamification: {
+      user_id: gamificationData?.gamification?.user_id || "",
+      xp: gamificationData?.gamification?.xp ?? 0,
+      level: gamificationData?.gamification?.level ?? 1,
+      xp_needed: gamificationData?.gamification?.xp_needed ?? 200,
+      streak_freezes_available: gamificationData?.gamification?.streak_freezes_available ?? 0,
+      last_freeze_used_at: gamificationData?.gamification?.last_freeze_used_at ?? null,
+      daily_goal: gamificationData?.gamification?.daily_goal ?? 15,
+      current_streak: gamificationData?.gamification?.current_streak ?? 0,
+      longest_streak: gamificationData?.gamification?.longest_streak ?? 0,
+      calendar: Array.isArray(gamificationData?.gamification?.calendar) ? gamificationData.gamification.calendar : [],
+      badges: Array.isArray(gamificationData?.gamification?.badges) ? gamificationData.gamification.badges : []
     }
   };
 

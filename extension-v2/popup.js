@@ -112,40 +112,73 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             function fetchFromCookies() {
-                chrome.cookies.getAll({}, (cookies) => {
-                    if (chrome.runtime.lastError || !cookies) {
-                        console.error("Failed to get cookies:", chrome.runtime.lastError);
+                const urls = ["http://localhost:3000", "http://127.0.0.1:3000"];
+                let urlIndex = 0;
+
+                function tryNextUrl() {
+                    if (urlIndex >= urls.length) {
+                        console.error("Auth token cookie not found on any URL");
                         return resolve(null);
                     }
 
-                    // Look for Supabase auth token cookie on localhost
-                    const authCookie = cookies.find(
-                        c => c.name && c.name.endsWith("-auth-token") && (c.domain.includes("localhost") || c.domain.includes("127.0.0.1"))
-                    );
-
-                    if (!authCookie) {
-                        console.error("Auth token cookie not found");
-                        return resolve(null);
-                    }
-
-                    try {
-                        let value = authCookie.value;
-                        if (value.startsWith("base64-")) {
-                            value = atob(value.substring(7));
-                        }
-                        const parsed = JSON.parse(value);
-                        if (parsed.access_token) {
-                            chrome.storage.local.set({ authToken: parsed.access_token }, () => {
-                                resolve(parsed.access_token);
-                            });
+                    const targetUrl = urls[urlIndex++];
+                    chrome.cookies.getAll({ url: targetUrl }, (cookies) => {
+                        if (chrome.runtime.lastError || !cookies || cookies.length === 0) {
+                            tryNextUrl();
                             return;
                         }
-                        resolve(null);
-                    } catch (err) {
-                        console.error("Token parse error:", err);
-                        resolve(null);
-                    }
-                });
+
+                        // Look for Supabase auth token cookie (supports name format: sb-<project-id>-auth-token)
+                        const authCookies = cookies.filter(
+                            c => c.name && c.name.includes("-auth-token")
+                        );
+
+                        if (authCookies.length === 0) {
+                            tryNextUrl();
+                            return;
+                        }
+
+                        try {
+                            // Sort cookies if split (with .0, .1 suffixes)
+                            authCookies.sort((a, b) => {
+                                const aSuffix = a.name.split('.').pop();
+                                const bSuffix = b.name.split('.').pop();
+                                const aNum = isNaN(aSuffix) ? -1 : parseInt(aSuffix, 10);
+                                const bNum = isNaN(bSuffix) ? -1 : parseInt(bSuffix, 10);
+                                return aNum - bNum;
+                            });
+
+                            let value = authCookies.map(c => c.value).join('');
+                            if (value.startsWith("base64-")) {
+                                value = atob(value.substring(7));
+                            } else {
+                                // URL decode cookie value since @supabase/ssr URL-encodes it
+                                value = decodeURIComponent(value);
+                            }
+
+                            const parsed = JSON.parse(value);
+                            let token = null;
+                            if (Array.isArray(parsed)) {
+                                token = parsed[0];
+                            } else if (parsed && parsed.access_token) {
+                                token = parsed.access_token;
+                            }
+
+                            if (token) {
+                                chrome.storage.local.set({ authToken: token }, () => {
+                                    resolve(token);
+                                });
+                                return;
+                            }
+                            tryNextUrl();
+                        } catch (err) {
+                            console.error("Token parse error for " + targetUrl + ":", err);
+                            tryNextUrl();
+                        }
+                    });
+                }
+
+                tryNextUrl();
             }
         });
     };

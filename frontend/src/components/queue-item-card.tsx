@@ -661,6 +661,8 @@ export const QueueItemCard = memo(function QueueItemCard({
                   </div>
                 ) : null}
 
+
+
                 {/* Active Reading Timer Block */}
                 {item.status === "reading" && (
                   <div className="mb-3 flex items-center justify-between bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 text-xs text-amber-500">
@@ -692,8 +694,6 @@ export const QueueItemCard = memo(function QueueItemCard({
                     </div>
                   </div>
                 )}
-
-                {/* Metadata Row */}
                 <div className="flex items-center justify-between text-xs text-muted-foreground/80 mt-auto pt-2 border-t border-border/10">
                   <div className="flex items-center gap-2 font-medium">
                     {item.estimated_read_time && !isYouTube && item.status !== "completed" && (
@@ -965,17 +965,6 @@ export const QueueItemCard = memo(function QueueItemCard({
                   </div>
                 ) : null}
 
-                {item.extracted_text && (
-                  <div className="space-y-1">
-                    <h4 className="text-[10px] font-bold text-muted-foreground/85 uppercase tracking-wider flex items-center gap-1">
-                      <BookOpen className="h-3.5 w-3.5" /> Extracted Text Preview
-                    </h4>
-                    <div className="relative max-h-36 overflow-y-auto rounded bg-secondary/20 border border-border/10 p-2.5 text-[11px] text-muted-foreground font-mono leading-relaxed whitespace-pre-line">
-                      {item.extracted_text.slice(0, 1000)}
-                      {item.extracted_text.length > 1000 ? "..." : ""}
-                    </div>
-                  </div>
-                )}
 
                 <div className="grid grid-cols-2 gap-3 text-[11px] bg-secondary/20 rounded p-2.5 border border-border/5">
                   <div>

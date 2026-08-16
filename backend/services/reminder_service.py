@@ -166,10 +166,60 @@ class ReminderService:
             )
             rows = cursor.fetchall()
             res = []
+
+            # Batch fetch item metadata from Supabase
+            item_ids = [row["item_id"] for row in rows if row["item_id"]]
+            items_by_id = {}
+            if item_ids:
+                try:
+                    from utils.supabase_client import supabase as g_supabase
+                    from utils.schema_fallback import fallback_db
+                    sel_cols = ["id", "title", "priority_score", "estimated_read_time"]
+                    if fallback_db.has_estimated_time_minutes:
+                        sel_cols.append("estimated_time_minutes")
+                    item_res = g_supabase.table("items").select(",".join(sel_cols)).in_("id", item_ids).execute()
+                    if item_res.data:
+                        merged = fallback_db.merge_items_metadata(user_id, item_res.data)
+                        for it in merged:
+                            items_by_id[it["id"]] = it
+                except Exception as ex:
+                    logger.error(f"[ReminderService] Error batch fetching items in active reminders: {ex}")
+
             for row in rows:
                 r = dict(row)
-                if r.get("status") == "failed" and r.get("error_message"):
-                    r["title"] = f"{r['title']} (Failed: {r['error_message']})"
+                
+                # Fetch clean info from items table
+                item = items_by_id.get(r.get("item_id"))
+                if item:
+                    r["title"] = item.get("title") or r["title"]
+                    p_score = item.get("priority_score") or 50.0
+                    if p_score >= 75:
+                        r["priority"] = "High"
+                    elif p_score >= 40:
+                        r["priority"] = "Medium"
+                    else:
+                        r["priority"] = "Normal"
+                    
+                    est_min = item.get("estimated_time_minutes")
+                    if est_min is None:
+                        est_sec = item.get("estimated_read_time") or 300
+                        est_min = float(est_sec) / 60.0
+                    r["estimated_read_time"] = f"{float(est_min):.1f} min"
+                else:
+                    # Clean up the local title string prefix/suffix if item not found
+                    title_clean = r["title"]
+                    if title_clean.startswith("Time to read: '") and title_clean.endswith("' (High priority)"):
+                        title_clean = title_clean[len("Time to read: '"):-len("' (High priority)")]
+                    elif title_clean.startswith("Time to read: '") and title_clean.endswith("'"):
+                        title_clean = title_clean[len("Time to read: '"):-1]
+                    r["title"] = title_clean
+                    r["priority"] = "Normal"
+                    r["estimated_read_time"] = "5.0 min"
+
+                # Never expose backend exception messages to users
+                if r.get("status") == "failed":
+                    r["error_message"] = "Unable to send email reminder."
+
                 r["reminder_item_id"] = r.get("item_id")
                 res.append(r)
             return res
@@ -205,15 +255,65 @@ class ReminderService:
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "SELECT * FROM local_reminder_history WHERE user_id = ? AND status IN ('completed', 'snoozed', 'read', 'dismissed') ORDER BY sent_at DESC LIMIT ?",
+                "SELECT * FROM local_reminder_history WHERE user_id = ? AND status IN ('completed', 'snoozed', 'read', 'dismissed', 'failed') ORDER BY sent_at DESC LIMIT ?",
                 (user_id, limit)
             )
             rows = cursor.fetchall()
             res = []
+
+            # Batch fetch item metadata from Supabase
+            item_ids = [row["item_id"] for row in rows if row["item_id"]]
+            items_by_id = {}
+            if item_ids:
+                try:
+                    from utils.supabase_client import supabase as g_supabase
+                    from utils.schema_fallback import fallback_db
+                    sel_cols = ["id", "title", "priority_score", "estimated_read_time"]
+                    if fallback_db.has_estimated_time_minutes:
+                        sel_cols.append("estimated_time_minutes")
+                    item_res = g_supabase.table("items").select(",".join(sel_cols)).in_("id", item_ids).execute()
+                    if item_res.data:
+                        merged = fallback_db.merge_items_metadata(user_id, item_res.data)
+                        for it in merged:
+                            items_by_id[it["id"]] = it
+                except Exception as ex:
+                    logger.error(f"[ReminderService] Error batch fetching items in history: {ex}")
+
             for row in rows:
                 r = dict(row)
-                if r.get("status") == "failed" and r.get("error_message"):
-                    r["title"] = f"{r['title']} (Failed: {r['error_message']})"
+                
+                # Fetch clean info from items table
+                item = items_by_id.get(r.get("item_id"))
+                if item:
+                    r["title"] = item.get("title") or r["title"]
+                    p_score = item.get("priority_score") or 50.0
+                    if p_score >= 75:
+                        r["priority"] = "High"
+                    elif p_score >= 40:
+                        r["priority"] = "Medium"
+                    else:
+                        r["priority"] = "Normal"
+                    
+                    est_min = item.get("estimated_time_minutes")
+                    if est_min is None:
+                        est_sec = item.get("estimated_read_time") or 300
+                        est_min = float(est_sec) / 60.0
+                    r["estimated_read_time"] = f"{float(est_min):.1f} min"
+                else:
+                    # Clean up local title prefix/suffix if item not found
+                    title_clean = r["title"]
+                    if title_clean.startswith("Time to read: '") and title_clean.endswith("' (High priority)"):
+                        title_clean = title_clean[len("Time to read: '"):-len("' (High priority)")]
+                    elif title_clean.startswith("Time to read: '") and title_clean.endswith("'"):
+                        title_clean = title_clean[len("Time to read: '"):-1]
+                    r["title"] = title_clean
+                    r["priority"] = "Normal"
+                    r["estimated_read_time"] = "5.0 min"
+
+                # Never expose backend exception messages to users
+                if r.get("status") == "failed":
+                    r["error_message"] = "Unable to send email reminder."
+
                 r["reminder_item_id"] = r.get("item_id")
                 res.append(r)
             return res
@@ -356,7 +456,11 @@ class ReminderService:
                 }
 
                 try:
-                    item_res = supabase_client.table("items").select("id, actual_time_spent, estimated_time_minutes, estimated_read_time").eq("id", item_id).execute()
+                    from utils.schema_fallback import fallback_db
+                    sel_cols = ["id", "actual_time_spent", "estimated_read_time"]
+                    if fallback_db.has_estimated_time_minutes:
+                        sel_cols.append("estimated_time_minutes")
+                    item_res = supabase_client.table("items").select(",".join(sel_cols)).eq("id", item_id).execute()
                     if item_res.data:
                         item_data = item_res.data[0]
                         item_data = fallback_db.merge_single_item_metadata(user_id, item_data)

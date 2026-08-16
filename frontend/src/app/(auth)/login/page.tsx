@@ -30,7 +30,7 @@ export default function LoginPage() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event: any, session: any) => {
       if (event === "SIGNED_IN" && session) {
         console.log("[login-redirect]");
-        router.replace("/dashboard");
+        window.location.href = "/dashboard";
       }
     });
 
@@ -57,8 +57,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/dashboard");
-    router.refresh();
+    window.location.href = "/dashboard";
   };
 
   const handleGoogleLogin = async () => {

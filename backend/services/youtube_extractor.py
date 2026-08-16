@@ -244,11 +244,16 @@ def extract_youtube(url: str) -> dict:
                                 transcript_val = " ".join([_get_text_from_segment(t) for t in transcript_data])
                                 selected_language = f"translated generated {transcript.language_code}"
                             except Exception:
-                                # 5. First available raw transcript
+                                # 5. Try translating first available transcript to English, or raw fallback
                                 transcript = next(iter(transcript_list))
-                                transcript_data = transcript.fetch()
-                                transcript_val = " ".join([_get_text_from_segment(t) for t in transcript_data])
-                                selected_language = f"raw {transcript.language_code}"
+                                try:
+                                    transcript_data = transcript.translate('en').fetch()
+                                    transcript_val = " ".join([_get_text_from_segment(t) for t in transcript_data])
+                                    selected_language = f"translated raw {transcript.language_code}"
+                                except Exception:
+                                    transcript_data = transcript.fetch()
+                                    transcript_val = " ".join([_get_text_from_segment(t) for t in transcript_data])
+                                    selected_language = f"raw {transcript.language_code}"
                 
                 MIN_TRANSCRIPT_CHARS = 1000
 
