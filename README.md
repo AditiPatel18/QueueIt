@@ -1,4 +1,4 @@
-# QueueIt
+# 🚀 QueueIt
 
 <p align="center">
   <img src="https://img.shields.io/badge/Next.js-15-black?logo=next.js" />
@@ -6,141 +6,86 @@
   <img src="https://img.shields.io/badge/TypeScript-5-blue?logo=typescript" />
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi" />
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python" />
-  <img src="https://img.shields.io/badge/PostgreSQL-Supabase-3ECF8E?logo=postgresql" />
-  <img src="https://img.shields.io/badge/AI-Google%20Gemini-4285F4?logo=google" />
-  <img src="https://img.shields.io/badge/License-MIT-yellow" />
+  <img src="https://img.shields.io/badge/PostgreSQL-Supabase-3ECF8E?logo=supabase" />
+  <img src="https://img.shields.io/badge/Google-Gemini_AI-4285F4?logo=google" />
 </p>
 
 <p align="center">
-  <strong>AI-Powered Knowledge Management & Content Queue Platform</strong>
-</p>
-
-<p align="center">
-  Save knowledge. Understand it faster. Know what to learn next.
+  <b>AI-Powered Knowledge Management Platform</b><br>
+  Save • Understand • Organize • Learn
 </p>
 
 ---
 
-## Overview
+# 📖 Overview
 
-**QueueIt** is an AI-powered knowledge management platform designed to solve a common problem: people save large amounts of useful content but rarely return to consume it.
+**QueueIt** is an AI-powered knowledge management and content queue platform that helps users turn scattered online resources into an organized and intelligent learning system.
 
-QueueIt turns saved content into an intelligent learning queue.
+We save hundreds of articles, YouTube videos, PDFs, GitHub repositories and useful webpages — but most of them are never revisited.
 
-Users can save YouTube videos, articles, webpages, PDFs, GitHub repositories and other resources. QueueIt extracts the available content, processes it with AI, generates meaningful summaries and tags, estimates reading time, tracks learning progress, and recommends what the user should consume next.
+QueueIt solves this problem by automatically extracting content, generating meaningful AI summaries, organizing resources, estimating reading time, tracking reading progress, providing analytics, and recommending what users should consume next.
 
-The platform combines **content extraction, AI processing, semantic search, personalized recommendations, analytics, reminders, and browser-based content capture** into a single system.
+The goal is simple:
+
+> **Don't just save knowledge. Actually consume it.**
 
 ---
 
-## Key Features
+# ✨ Highlights
 
-### Intelligent Content Ingestion
+- 🤖 AI-powered content summarization
+- 🎥 YouTube transcript extraction
+- 🌐 Webpage & article extraction
+- 📄 PDF content processing
+- 💻 GitHub repository support
+- 🧠 Semantic search using embeddings
+- 💬 AI Chat with saved knowledge
+- 🏷 AI-powered tagging & categorization
+- 📚 Collections & folders
+- ⭐ Favorites & saved content
+- ⏱ Reading time estimation
+- 📊 Reading analytics
+- 📈 Reading progress tracking
+- 🔥 Reading streaks
+- 🎯 AI-powered recommendations
+- 🔔 Smart reading reminders
+- 📧 Email notifications
+- 🌐 Chrome Extension
+- 🔐 Secure authentication with Google OAuth & Email
+
+---
+
+# 🚀 Features
+
+## 📥 Intelligent Content Ingestion
+
+QueueIt supports multiple sources of knowledge:
 
 - Save YouTube videos
-- Save articles and webpages
+- Save articles
+- Save webpages
 - Save PDFs
 - Save GitHub repositories
-- Browser extension for one-click saving
-- Automatic metadata extraction
-- Duplicate content detection
-- Content type detection
-- Content processing pipeline
-
-### AI-Powered Understanding
-
-- AI-generated concise summaries
-- Detailed AI summaries based on the complete extracted content
-- Automatic tag generation
-- Smart content categorization
-- Priority scoring
-- Personalized recommendations
-- Semantic search using embeddings
-- AI Chat over saved knowledge
-
-### Knowledge Organization
-
-- Collections and folders
-- Favorites
-- Search and filtering
-- Content type filters
-- Reading status management
-- Reading history
-- Automatic organization
-- Restore and delete functionality
-
-### Reading & Progress Tracking
-
-- Estimated reading time
-- Reading progress tracking
-- Unread / Reading / Completed states
-- Completion history
-- Reading statistics
-- Completion streaks
-
-### Smart Reminders
-
-- Schedule reading reminders
-- Email notifications
-- Reminder history
-- Scheduled reminder processing
-- Personalized reading recommendations
-- Direct "Read Now" links to saved content
-- Duplicate notification prevention
-
-### Analytics
-
-- Total saved content
-- Completed content
-- Reading progress
-- Time spent reading
-- Completion statistics
-- Content distribution
-- Reading streaks
-- Personalized recommendations
-
----
-
-# System Architecture
+- Save content using Chrome Extension
+- Automatically detect content type
+- Extract useful metadata
+- Extract available textual content
+- Prevent duplicate content from being stored
 
 ```text
-                         ┌─────────────────────┐
-                         │   Chrome Extension  │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Next.js Frontend                     │
-│                                                         │
-│ React • TypeScript • Tailwind CSS • SWR • Framer Motion │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-                       REST APIs
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                    FastAPI Backend                      │
-│                                                         │
-│ Authentication • Content APIs • Search • Analytics      │
-│ Reminders • AI Services • Background Processing         │
-└───────────────┬─────────────────────┬───────────────────┘
-                │                     │
-                ▼                     ▼
-      ┌─────────────────┐   ┌──────────────────────┐
-      │ Content         │   │ Google Gemini AI     │
-      │ Processing      │   │                      │
-      │                 │   │ • Summaries          │
-      │ • YouTube       │   │ • Tags               │
-      │ • Webpages      │   │ • Classification     │
-      │ • PDFs          │   │ • Recommendations    │
-      │ • GitHub        │   │ • Priority            │
-      └────────┬────────┘   └──────────┬───────────┘
-               │                       │
-               └───────────┬───────────┘
-                           ▼
-                 ┌─────────────────────┐
-                 │ Supabase PostgreSQL  │
-                 │                     │
-                 │ Auth + Application  │
-                 │ Data + Embeddings   │
-                 └─────────────────────┘
+URL / Webpage
+      │
+      ▼
+Content Detection
+      │
+      ├── YouTube
+      ├── Article
+      ├── PDF
+      ├── GitHub
+      └── Webpage
+      │
+      ▼
+Content Extraction
+      │
+      ▼
+QueueIt
