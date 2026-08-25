@@ -1,3 +1,4 @@
+import { Resend } from 'resend';
 import nodemailer from 'nodemailer';
 import { supabase } from '../config/supabase';
 import { openDb, dbGet } from '../utils/schemaFallback';
@@ -24,6 +25,15 @@ export class NotificationService {
     }
   }
 
+  async sendEmail(
+    toEmail: string,
+    subject: string,
+    htmlContent: string,
+    textContent?: string
+  ): Promise<[boolean, string]> {
+    return this.sendEmailAsync(toEmail, subject, htmlContent, textContent);
+  }
+
   async sendEmailAsync(
     toEmail: string,
     subject: string,
@@ -31,48 +41,64 @@ export class NotificationService {
     textContent?: string
   ): Promise<[boolean, string]> {
     const resendKey = process.env.RESEND_API_KEY;
-    let resendErr = '';
+    const fromEmail = process.env.EMAIL_FROM || 'QueueIt <onboarding@resend.dev>';
+    const defaultText = textContent || 'Please view this email in an HTML-capable email client.';
 
+    // 1. Primary: Resend SDK HTTPS API
     if (resendKey) {
+      let resendErr = '';
       try {
-        const payload = {
-          from: process.env.EMAIL_FROM || 'QueueIt <onboarding@resend.dev>',
-          to: [toEmail],
-          subject,
-          html: htmlContent,
-          text: textContent || 'Please view this email in an HTML-capable email client.',
-        };
+        const resend = new Resend(resendKey);
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const { data, error } = await resend.emails.send({
+              from: fromEmail,
+              to: [toEmail],
+              subject: subject,
+              html: htmlContent,
+              text: defaultText,
+            });
 
-        const response = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${resendKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        });
+            if (!error && data?.id) {
+              console.log(`[NotificationService] ✅ Email delivered to ${toEmail} via Resend SDK (ID: ${data.id}, attempt ${attempt})`);
+              return [true, ''];
+            }
 
-        if (response.ok) {
-          console.log(`[NotificationService] Email sent via Resend async to ${toEmail}`);
-          return [true, ''];
-        } else {
-          const bodyText = await response.text();
-          resendErr = `Resend API error (status ${response.status}): ${bodyText}`;
-          console.error(`[NotificationService] Resend email dispatch failed: ${bodyText}`);
+            const errorMsg = error ? (typeof error === 'object' && error !== null ? ((error as any).message || JSON.stringify(error)) : String(error)) : 'Unknown Resend error';
+            resendErr = `Resend API error (attempt ${attempt}): ${errorMsg}`;
+            console.warn(`[NotificationService] ${resendErr}`);
+
+            if (attempt < 3) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          } catch (err: any) {
+            resendErr = `Resend exception (attempt ${attempt}): ${err?.message || String(err)}`;
+            console.warn(`[NotificationService] ${resendErr}`);
+            if (attempt < 3) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }
         }
       } catch (err: any) {
-        resendErr = `Resend exception: ${err.message || err}`;
-        console.error(`[NotificationService] Resend email error, trying SMTP fallback:`, err);
+        resendErr = `Resend initialization error: ${err?.message || String(err)}`;
+        console.warn(`[NotificationService] ${resendErr}`);
+      }
+
+      console.error(`[NotificationService] ❌ Resend dispatch failed for ${toEmail}: ${resendErr}`);
+
+      // Fallback to SMTP if explicitly configured
+      if (!process.env.SMTP_HOST) {
+        return [false, resendErr];
       }
     }
 
-    // SMTP Fallback
+    // 2. Secondary: SMTP Fallback if configured
     if (process.env.SMTP_HOST) {
       const smtpHost = process.env.SMTP_HOST;
       const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
       const smtpUser = process.env.SMTP_EMAIL || process.env.SMTP_USER;
       const smtpPassword = process.env.SMTP_PASSWORD;
-      const fromEmail = process.env.EMAIL_FROM || smtpUser || 'no-reply@queueit.com';
+      const smtpFrom = process.env.EMAIL_FROM || smtpUser || 'no-reply@queueit.com';
 
       let lastSmtpErr = '';
       for (let attempt = 1; attempt <= 3; attempt++) {
@@ -88,14 +114,14 @@ export class NotificationService {
           });
 
           await transporter.sendMail({
-            from: fromEmail,
+            from: smtpFrom,
             to: toEmail,
             subject,
-            text: textContent || 'Please view this email in an HTML-capable email client.',
+            text: defaultText,
             html: htmlContent,
           });
 
-          console.log(`[NotificationService] ✅ Email delivered to ${toEmail} via SMTP (attempt ${attempt})`);
+          console.log(`[NotificationService] ✅ Email delivered to ${toEmail} via SMTP fallback (attempt ${attempt})`);
           return [true, ''];
         } catch (err: any) {
           lastSmtpErr = `SMTP error (attempt ${attempt}): ${err.message || err}`;
@@ -106,16 +132,12 @@ export class NotificationService {
         }
       }
 
-      const finalReason = resendErr ? `${resendErr} | ${lastSmtpErr}` : lastSmtpErr;
-      console.error(`[NotificationService] ❌ SMTP failed for ${toEmail} after 3 attempts: ${lastSmtpErr}`);
-      return [false, finalReason];
+      console.error(`[NotificationService] ❌ SMTP fallback failed for ${toEmail} after 3 attempts: ${lastSmtpErr}`);
+      return [false, lastSmtpErr];
     }
 
-    if (resendKey) {
-      return [false, resendErr];
-    }
-
-    console.warn(`[NotificationService] No configured email provider. Mock log only — to: ${toEmail}, subject: ${subject}`);
+    // 3. Unconfigured Provider: Safe mock return in development / testing
+    console.warn(`[NotificationService] No configured email provider (RESEND_API_KEY or SMTP_HOST missing). Mock log only — to: ${toEmail}, subject: ${subject}`);
     return [true, ''];
   }
 
