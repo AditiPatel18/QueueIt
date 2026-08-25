@@ -214,8 +214,9 @@ async function startNotificationQueueWorker(): Promise<void> {
     }
   }
 
-  if (!fallbackDb.initialized) {
-    console.error('[Worker] Cannot start worker: fallbackDb is not initialized.');
+  const ok = await fallbackDb.verifySchemaTables();
+  if (!ok || !fallbackDb.initialized) {
+    console.error('[Worker] Cannot start worker: fallbackDb table verification failed.');
     return;
   }
 
@@ -244,8 +245,9 @@ export async function startReminderScheduler(): Promise<void> {
     }
   }
 
-  if (!fallbackDb.initialized) {
-    console.error('[Scheduler] Cannot start reminder scheduler: fallbackDb is not initialized.');
+  const ok = await fallbackDb.verifySchemaTables();
+  if (!ok || !fallbackDb.initialized) {
+    console.error('[Scheduler] Cannot start reminder scheduler: fallbackDb table verification failed.');
     return;
   }
 

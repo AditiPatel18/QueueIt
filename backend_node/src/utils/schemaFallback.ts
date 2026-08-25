@@ -109,10 +109,11 @@ export class SchemaFallbackManager {
   }
 
   private async initSqlite(): Promise<void> {
+    console.log(`[SQLite] DB_PATH: ${DB_PATH}`);
+    console.log('[SQLite] Initializing schema...');
+
     const db = openDb();
     try {
-
-      
       // local_collections
       await dbRun(db, `CREATE TABLE IF NOT EXISTS local_collections (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -182,12 +183,40 @@ export class SchemaFallbackManager {
       await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_streak_calendar_user ON local_streak_calendar(user_id)`);
 
       this.initialized = true;
-      if (process.env.NODE_ENV !== 'test') {
-        console.log('[SQLite] Schema initialization completed successfully');
-      }
+      console.log('[SQLite] Schema initialization completed successfully');
     } catch (err) {
       console.error('[SQLite] Error during schema initialization:', err);
       throw err;
+    } finally {
+      db.close();
+    }
+
+    const verified = await this.verifySchemaTables();
+    if (!verified) {
+      this.initialized = false;
+      throw new Error('[SQLite] FATAL: Schema table verification failed after initSqlite!');
+    }
+  }
+
+  async verifySchemaTables(): Promise<boolean> {
+    const db = openDb();
+    try {
+      const historyRow = await dbGet<any>(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='local_reminder_history'");
+      const settingsRow = await dbGet<any>(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='local_reminder_settings'");
+
+      const hasHistory = !!historyRow?.name;
+      const hasSettings = !!settingsRow?.name;
+
+      if (hasHistory && hasSettings) {
+        console.log('[SQLite] Verified local_reminder_history exists');
+        return true;
+      } else {
+        console.error(`[SQLite] Schema verification failed: local_reminder_history=${hasHistory}, local_reminder_settings=${hasSettings}`);
+        return false;
+      }
+    } catch (err) {
+      console.error('[SQLite] Error verifying schema tables:', err);
+      return false;
     } finally {
       db.close();
     }
