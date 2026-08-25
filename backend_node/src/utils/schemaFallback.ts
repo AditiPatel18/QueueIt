@@ -212,15 +212,18 @@ export class SchemaFallbackManager {
   // ── Collections ────────────────────────────────────────────────────────────
 
   async listCollections(userId: string, supabaseClient: any): Promise<any[]> {
-    if (this.has_collections_table) {
-      try {
-        const res = await supabaseClient.from('collections').select('*').eq('user_id', userId).order('created_at');
-        if (!res.error) return res.data || [];
-      } catch { /* fallback */ }
-    }
+    try {
+      const res = await supabaseClient.from('collections').select('*').eq('user_id', userId).order('created_at');
+      if (!res.error && Array.isArray(res.data)) {
+        return res.data;
+      }
+    } catch { /* fallback to local sqlite */ }
+
     const db = openDb();
     try {
       return await dbAll(db, 'SELECT * FROM local_collections WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+    } catch {
+      return [];
     } finally { db.close(); }
   }
 

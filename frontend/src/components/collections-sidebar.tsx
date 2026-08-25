@@ -210,21 +210,22 @@ export function CollectionsSidebar({
   const handleAutoOrganize = async () => {
     setReclassifying(true);
     try {
-      await reclassifyItems();
-      toast.success("AI auto-categorization started in background!", {
-        description: "Uncategorized items will be assigned to folders shortly."
-      });
-      // Trigger a SWR collections and items refresh after a brief delay
-      setTimeout(() => {
-        mutateCollections();
-        for (const key of cache.keys()) {
-          if (typeof key === "string" && key.startsWith("api/items")) {
-            mutate(key);
-          }
+      const res = await reclassifyItems();
+      const count = res?.reclassified_count ?? 0;
+      toast.success(
+        count > 0
+          ? `AI reclassified ${count} item${count === 1 ? "" : "s"} into folders!`
+          : "All items are categorized in the best folders."
+      );
+      // Immediately refresh SWR collections and items cache
+      mutateCollections();
+      for (const key of cache.keys()) {
+        if (typeof key === "string" && key.startsWith("api/items")) {
+          mutate(key);
         }
-      }, 3000);
+      }
     } catch (err: any) {
-      toast.error("Failed to start auto-categorization", { description: err.message });
+      toast.error("Failed to reclassify items", { description: err.message || String(err) });
     } finally {
       setReclassifying(false);
     }

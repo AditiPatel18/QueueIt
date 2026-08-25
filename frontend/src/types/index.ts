@@ -158,6 +158,7 @@ export interface ReminderHistoryEntry {
   user_id: string;
   item_id: string | null;
   title: string;
+  url?: string | null;
   scheduled_time: string;
   sent_at: string;
   status: 'pending' | 'sent' | 'delivered' | 'opened' | 'completed' | 'snoozed' | 'read' | 'failed';
@@ -173,6 +174,7 @@ export interface GamificationBadge {
 }
 
 export interface GamificationData {
+  user_id?: string;
   xp: number;
   level: number;
   xp_needed: number;
@@ -188,6 +190,7 @@ export interface GamificationData {
 export interface RemindersResponse {
   settings: ReminderSettings;
   active_reminders: ReminderHistoryEntry[];
+  reminders?: ReminderHistoryEntry[];
   unread_count: number;
   history: ReminderHistoryEntry[];
   gamification: GamificationData;

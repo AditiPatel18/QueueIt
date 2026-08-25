@@ -69,7 +69,7 @@ export function RemindersScheduler({ browserNotificationsEnabled, frequency }: R
 
         if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
           // Deduplicate active list in scheduler as well to fetch clean titles
-          const activeListRaw = reminders.active_reminders || [];
+          const activeListRaw = reminders.active_reminders || reminders.reminders || [];
           const uniqueActive = activeListRaw.filter((rem, index, self) =>
             self.findIndex(r => (r.item_id && r.item_id === rem.item_id) || r.title === rem.title) === index
           );

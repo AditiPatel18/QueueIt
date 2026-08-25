@@ -73,6 +73,7 @@ interface ReminderPanelContentProps {
   handleSnooze: (id: string, type: "1h" | "today" | "tomorrow") => Promise<void>;
   handleComplete: (id: string) => Promise<void>;
   handleDismiss: (id: string) => Promise<void>;
+  handleNotificationClick: (rem: any) => Promise<void>;
   handleSaveSettings: () => Promise<void>;
   handleUseFreeze: () => Promise<void>;
   gamification: any;
@@ -103,6 +104,7 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
   handleSnooze,
   handleComplete,
   handleDismiss,
+  handleNotificationClick,
   handleSaveSettings,
   handleUseFreeze,
   gamification,
@@ -182,15 +184,16 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
         {/* 1. Reminders Tab */}
         {activeTab === "reminders" && (
           <div className="space-y-3">
-            {activeList.length > 0 ? (
-              activeList.map((rem) => (
+            {(activeList || []).length > 0 ? (
+              (activeList || []).map((rem) => (
                 <div 
                   key={rem.id} 
-                  className="p-2.5 bg-secondary/35 rounded-xl border border-border/10 space-y-2 relative group"
+                  onClick={() => handleNotificationClick(rem)}
+                  className="p-2.5 bg-secondary/35 hover:bg-secondary/50 rounded-xl border border-border/10 space-y-2 relative group cursor-pointer transition-colors"
                 >
                   <div className="flex justify-between items-start gap-2">
                     <div className="space-y-1 flex-1 min-w-0">
-                      <p className="text-[11px] font-semibold leading-normal text-foreground break-words">
+                      <p className="text-[11px] font-semibold leading-normal text-foreground break-words group-hover:text-primary transition-colors">
                         {rem.title}
                       </p>
                       <div className="flex items-center gap-1 text-[8px] text-muted-foreground">
@@ -201,7 +204,10 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
                       </div>
                     </div>
                     <button
-                      onClick={() => handleDismiss(rem.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDismiss(rem.id);
+                      }}
                       className="text-[8px] text-muted-foreground hover:text-foreground shrink-0 border border-border/10 px-1.5 py-0.5 rounded bg-accent/20 cursor-pointer transition-colors"
                       title="Dismiss reminder"
                     >
@@ -210,9 +216,12 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
                   </div>
 
                   {/* Complete & Snooze Actions - Equal-sized buttons */}
-                  <div className="flex gap-2 pt-0.5 w-full">
+                  <div className="flex gap-2 pt-0.5 w-full" onClick={(e) => e.stopPropagation()}>
                     <Button
-                      onClick={() => handleComplete(rem.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleComplete(rem.id);
+                      }}
                       size="sm"
                       className="flex-1 text-[9px] h-6.5 bg-emerald-600 hover:bg-emerald-700 text-white border-0 cursor-pointer flex items-center justify-center gap-1"
                     >
@@ -220,7 +229,7 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
                       Complete
                     </Button>
 
-                    <div className="flex-1">
+                    <div className="flex-1" onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger
                           className="w-full inline-flex items-center justify-center gap-1 rounded-md border border-border/20 bg-transparent text-[9px] font-medium h-6.5 hover:bg-accent/40 text-foreground cursor-pointer transition-colors focus:outline-none"
@@ -230,19 +239,28 @@ const ReminderPanelContent = React.memo(function ReminderPanelContent({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent className="glass border-border/30 w-32 z-50">
                           <DropdownMenuItem 
-                            onClick={() => handleSnooze(rem.id, "1h")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSnooze(rem.id, "1h");
+                            }}
                             className="cursor-pointer text-[9px] py-1.5"
                           >
                             1 Hour
                           </DropdownMenuItem>
                           <DropdownMenuItem 
-                            onClick={() => handleSnooze(rem.id, "today")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSnooze(rem.id, "today");
+                            }}
                             className="cursor-pointer text-[9px] py-1.5"
                           >
                             Rest of Today
                           </DropdownMenuItem>
                           <DropdownMenuItem 
-                            onClick={() => handleSnooze(rem.id, "tomorrow")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSnooze(rem.id, "tomorrow");
+                            }}
                             className="cursor-pointer text-[9px] py-1.5"
                           >
                             Until Tomorrow
@@ -652,6 +670,7 @@ export function RemindersPopover() {
     handleSnooze,
     handleComplete,
     handleDismiss,
+    handleNotificationClick,
     handleSaveSettings,
     handleUseFreeze,
     gamification
@@ -691,7 +710,7 @@ export function RemindersPopover() {
           <Bell className="h-4.5 w-4.5 text-muted-foreground hover:text-foreground transition-colors" />
           
           {/* Animated Badge Counter */}
-          {unreadCount > 0 && (
+          {(unreadCount || 0) > 0 && (
             <span className="absolute -top-1.5 -right-1.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-orange-500 text-[9px] font-black text-white border-2 border-background animate-pulse animate-bounce">
               {unreadCount}
             </span>
@@ -733,6 +752,7 @@ export function RemindersPopover() {
                   handleSnooze={handleSnooze}
                   handleComplete={handleComplete}
                   handleDismiss={handleDismiss}
+                  handleNotificationClick={handleNotificationClick}
                   handleSaveSettings={handleSaveSettings}
                   handleUseFreeze={handleUseFreeze}
                   gamification={gamification}

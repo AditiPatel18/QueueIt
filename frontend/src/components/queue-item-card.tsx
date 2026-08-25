@@ -53,10 +53,13 @@ interface QueueItemCardProps {
 // ---------------------------------------------------------------------------
 
 function formatDuration(seconds: number): string {
+  if (!seconds || seconds <= 0) return "0s";
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
   if (hours > 0) return `${hours}h ${mins}m`;
-  return `${mins} min`;
+  if (mins > 0) return `${mins}m${secs > 0 ? ` ${secs}s` : ''}`;
+  return `${secs}s`;
 }
 
 function formatTimeSpent(minutes?: number | null): string {
@@ -391,10 +394,14 @@ export const QueueItemCard = memo(function QueueItemCard({
     setActionLoading("move");
     try {
       await updateItem(item.id, { collection_id: collectionId });
-      toast.success("Folder updated");
+      toast.success(collectionId ? "Item moved to folder" : "Item removed from folder");
       onUpdate();
+      mutate("api/collections");
     } catch (err: any) {
-      toast.error("Failed to move item", { description: err.message });
+      toast.error("Failed to update folder", {
+        description: err.message || "Previous folder preserved.",
+      });
+      onUpdate();
     } finally {
       setActionLoading(null);
     }

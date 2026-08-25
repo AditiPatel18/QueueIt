@@ -1,69 +1,89 @@
+# ================================
 # Dependencies
+# ================================
 node_modules/
 __pycache__/
 *.pyc
 *.pyo
 
-# Environment variables
+# ================================
+# Environment Variables / Secrets
+# ================================
 .env
 .env.local
 .env.*.local
 backend/.env
+backend_node/.env
+frontend/.env.local
 
-# Python virtual environment
+# ================================
+# Databases / Local Data
+# ================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ================================
+# Python Virtual Environments
+# ================================
 backend/venv/
 backend/.venv/
+.venv/
 
-# Next.js
+# ================================
+# Next.js / Frontend
+# ================================
 frontend/.next/
 frontend/out/
 
-# Build outputs
+# ================================
+# Build Outputs
+# ================================
 dist/
 build/
+backend_node/dist/
 
+# ================================
 # IDE
+# ================================
 .vscode/
 .idea/
 *.swp
 *.swo
 
+# ================================
 # OS
+# ================================
 .DS_Store
 Thumbs.db
 
+# ================================
 # Supabase
+# ================================
 supabase/.temp/
 
+# ================================
 # Logs
+# ================================
 *.log
 npm-debug.log*
 
+# ================================
+# Generated Files
+# ================================
 backend/static/audio/
 backend/static/uploads/
 static/
-.env
-.venv/
-__pycache__/
-*.pyc
-node_modules/
 
-# Generated audio
-backend/static/audio/
-
-# Generated static files
-static/
-
-# Local test scripts
+# ================================
+# Test / Local Scripts
+# ================================
 backend/test_api_v2.py
 backend/test_yt_simple.py
 backend/find_user.py
 
-# Test & Debug
-backend/test_*.py
-backend/debug_*.py
-backend/test_*.mp3
-
-# Python cache
-backend/.youtube_cache/
-*.pyc
+# ================================
+# Test Coverage
+# ================================
+coverage/
+**/coverage/

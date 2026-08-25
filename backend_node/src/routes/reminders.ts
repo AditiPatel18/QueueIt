@@ -41,6 +41,7 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     return res.json({
       settings,
       reminders: activeReminders,
+      active_reminders: activeReminders,
       history: reminderHistory,
       unread_count: unreadCount,
       gamification,

@@ -568,7 +568,7 @@ export function QueueList({
             <Input
               ref={searchInputRef}
               placeholder="Search your queue (title, summary, tags)..."
-              defaultValue={search}
+              value={search ?? ""}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9 glass border-border/20"
             />
@@ -716,10 +716,23 @@ export function QueueList({
               <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
               <span>Analyzing recommendations...</span>
             </div>
-          ) : recommendation && recommendation.item_id ? (
-            <div className="space-y-1 mt-1.5">
-              <p className="text-xs font-semibold leading-normal line-clamp-2">
-                Focus on <span className="text-primary font-bold">"{recommendation.title}"</span> next
+          ) : recommendation && (recommendation.item_id || recommendation.item?.id) ? (
+            <div
+              className="space-y-1 mt-1.5 cursor-pointer group"
+              onClick={() => {
+                const targetId = recommendation.item_id || recommendation.item?.id;
+                if (targetId) {
+                  const el = document.getElementById(`item-${targetId}`);
+                  if (el) {
+                    el.scrollIntoView({ behavior: "smooth", block: "center" });
+                    el.classList.add("ring-2", "ring-primary");
+                    setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 2500);
+                  }
+                }
+              }}
+            >
+              <p className="text-xs font-semibold leading-normal line-clamp-2 group-hover:text-primary transition-colors">
+                Focus on <span className="text-primary font-bold">"{recommendation.title || recommendation.item?.title || "Recommended Content"}"</span> next
               </p>
               {recommendation.reason && (
                 <p className="text-[10px] text-muted-foreground leading-normal line-clamp-1 italic">

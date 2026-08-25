@@ -9,9 +9,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { supabase } from '../config/supabase';
 import { fallbackDb } from '../utils/schemaFallback';
-import { normalizeUrl, resolvePlatformInfo } from '../utils/urlHelper';
+import { normalizeUrl, resolvePlatformInfo, isSafeUrl } from '../utils/urlHelper';
 import { StreakService } from '../services/gamificationService';
-import { AIService } from '../services/aiService';
+import { AIService, determineFolderForItem } from '../services/aiService';
 
 const router = Router();
 
@@ -30,6 +30,27 @@ function updateIngestionDebug(itemId: string, stage: string, message: string, er
   ingestionDebugInfo[itemId].logs.push(`[${ts}] [${stage}] ${message}`);
   if (error != null) ingestionDebugInfo[itemId].error = error;
 }
+// ---------------------------------------------------------------------------
+// GET /api/items/debug-ingestion/:id — Debug session logs
+// ---------------------------------------------------------------------------
+
+router.get('/debug-ingestion/:id', async (req: Request, res: Response) => {
+  const itemId = req.params.id;
+  if (ingestionDebugInfo[itemId]) {
+    return res.json(ingestionDebugInfo[itemId]);
+  }
+  try {
+    const { data } = await supabase.from('items').select('id, processing_status, ai_summary').eq('id', itemId).maybeSingle();
+    if (data) {
+      return res.json({
+        pipeline_stage: data.processing_status || 'completed',
+        logs: [`Item exists in database. Current status: ${data.processing_status}`],
+        error: data.processing_status === 'completed' ? null : 'Processing pending',
+      });
+    }
+  } catch { /* non-fatal */ }
+  return res.status(404).json({ detail: `No ingestion debug session found for ID ${itemId}` });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,6 +174,9 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
       return res.status(400).json({ detail: 'URL is required' });
     }
     const cleanUrl = url.trim();
+    if (!isSafeUrl(cleanUrl)) {
+      return res.status(400).json({ detail: 'Invalid or restricted URL target' });
+    }
     const normalized = normalizeUrl(cleanUrl);
 
     // Duplicate check
@@ -369,13 +393,20 @@ router.get('/recommendations/next', requireAuth, async (req: AuthenticatedReques
   try {
     const { data: candidateData } = await supabase.from('items').select('*').eq('user_id', userId).in('status', ['unread', 'reading']);
     const { data: completedData } = await supabase.from('items').select('*').eq('user_id', userId).eq('status', 'completed');
+    const { data: allData } = await supabase.from('items').select('*').eq('user_id', userId);
 
     let candidates = await fallbackDb.mergeItemsMetadata(userId, candidateData || []);
     const completedItems = await fallbackDb.mergeItemsMetadata(userId, completedData || []);
     const trackingInfo = await fallbackDb.getItemTracking(userId);
 
+    // If no unread/reading candidates exist, check if all items are completed or queue is empty
     if (!candidates.length) {
-      return res.json({ suggestion: null });
+      const allItems = await fallbackDb.mergeItemsMetadata(userId, allData || []);
+      if (!allItems.length) {
+        return res.json({ suggestion: null, reason: 'No items in your queue yet. Add an item to get AI recommendations!' });
+      }
+      // If all items are completed, pick from allItems as fallback
+      candidates = allItems;
     }
 
     // Build interest tags from completed items
@@ -387,37 +418,53 @@ router.get('/recommendations/next', requireAuth, async (req: AuthenticatedReques
     }
     const interestTags = Object.entries(interestTagCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t]) => t);
 
-    // Score candidates
+    // Score candidates deterministically
     const now = Date.now();
     const scored = candidates.map(item => {
       let score = parseFloat(item.priority_score) || 50.0;
-      // Boost for matching interest tags
-      for (const tag of normalizeTags(item.tags)) {
-        if (interestTags.includes(tag)) score += 5;
+      const tags = normalizeTags(item.tags);
+      for (const tag of tags) {
+        if (interestTags.includes(tag)) score += 15;
       }
-      // Penalize recently recommended items
+      if (item.status === 'reading') score += 20;
+      if (item.status === 'unread') score += 10;
       const track = trackingInfo[item.id];
       if (track?.last_recommended_at) {
         const lastRec = new Date(track.last_recommended_at).getTime();
         const hoursSince = (now - lastRec) / 3600000;
-        if (hoursSince < 24) score -= 20;
+        if (hoursSince < 24) score -= 25;
       }
-      // Boost reading items (in-progress)
-      if (item.status === 'reading') score += 10;
       return { item, score };
     });
 
     scored.sort((a, b) => b.score - a.score);
     const top = scored[0]?.item;
-    if (top?.id) {
-      fallbackDb.recordItemRecommendation(userId, top.id).catch(() => {});
+
+    if (!top || !top.id) {
+      return res.json({ suggestion: null, reason: 'No recommendation available.' });
     }
 
-    const reason = top
-      ? `Based on your ${top.status === 'reading' ? 'reading progress and ' : ''}interests, this is your next recommended item.`
-      : null;
+    fallbackDb.recordItemRecommendation(userId, top.id).catch(() => {});
 
-    return res.json({ suggestion: top ? { item_id: top.id, item: itemToResponse(top), reason } : null });
+    const itemResp = itemToResponse(top);
+    const title = itemResp.title || top.title || 'Untitled Item';
+    const topTags = normalizeTags(top.tags);
+
+    let reason = `Based on your ${top.status === 'reading' ? 'in-progress reading and ' : ''}priority score of ${Math.round(top.priority_score || 50)}, this is your top recommended content.`;
+    const matchTag = topTags.find(t => interestTags.includes(t));
+    if (matchTag) {
+      reason = `Matches your frequent interest in #${matchTag}. High priority content to consume next.`;
+    }
+
+    return res.json({
+      suggestion: {
+        item_id: top.id,
+        title,
+        item: itemResp,
+        reason,
+        priority_score: top.priority_score || 50,
+      }
+    });
   } catch (err: any) {
     return res.status(400).json({ detail: err.message || String(err) });
   }
@@ -586,6 +633,78 @@ router.get('/user/streak-heatmap', requireAuth, async (req: AuthenticatedRequest
     return res.json(heatmap);
   } catch (err: any) {
     return res.status(400).json({ detail: err.message || String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/items/analytics/export — Export Reading Analytics to CSV
+// ---------------------------------------------------------------------------
+
+function escapeCSVCell(val: any): string {
+  if (val === null || val === undefined) return '""';
+  const str = String(val);
+  const escaped = str.replace(/"/g, '""');
+  return `"${escaped}"`;
+}
+
+router.get('/analytics/export', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = getUserId(req);
+  try {
+    const selectCols = fallbackDb.getOptimizedSelectString();
+    const { data, error } = await supabase.from('items').select(selectCols).eq('user_id', userId);
+    if (error) {
+      console.error('[items] export error fetching items:', error);
+    }
+    let items = await fallbackDb.mergeItemsMetadata(userId, data || []);
+
+    const headers = [
+      "ID",
+      "Title",
+      "URL",
+      "Category",
+      "Status",
+      "Tags",
+      "Estimated Time (Minutes)",
+      "Actual Time Spent (Minutes)",
+      "Added At",
+      "Completed At",
+      "Priority Score"
+    ];
+
+    const rows: string[] = [];
+    rows.push(headers.map(escapeCSVCell).join(','));
+
+    for (const item of items) {
+      const estMin = item.estimated_time_minutes || ((item.estimated_read_time || 300) / 60);
+      const actMin = item.actual_time_spent ?? 0;
+      const tagsStr = Array.isArray(item.tags) ? item.tags.join(', ') : (item.tags || '');
+      const cat = item.source_type || item.content_type || 'article';
+
+      const row = [
+        item.id,
+        item.title || 'Untitled',
+        item.url || '',
+        cat,
+        item.status || 'unread',
+        tagsStr,
+        Number(estMin).toFixed(2),
+        Number(actMin).toFixed(2),
+        item.added_at || '',
+        item.completed_at || '',
+        item.priority_score ?? 50
+      ];
+
+      rows.push(row.map(escapeCSVCell).join(','));
+    }
+
+    const csvContent = rows.join('\r\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="queueit_reading_analytics.csv"');
+    return res.status(200).send(csvContent);
+  } catch (err: any) {
+    console.error('[items] analytics/export error:', err);
+    return res.status(500).json({ detail: err.message || 'Failed to export CSV' });
   }
 });
 
@@ -817,6 +936,17 @@ router.post('/bulk', requireAuth, async (req: AuthenticatedRequest, res: Respons
   }
   try {
     let updated = 0;
+    const targetColId = collection_id || null;
+
+    if (action === 'move' && collection_id !== undefined) {
+      if (targetColId) {
+        const { data: col } = await supabase.from('collections').select('id').eq('id', targetColId).eq('user_id', userId).maybeSingle();
+        if (!col) {
+          return res.status(400).json({ detail: 'Invalid or unauthorized collection_id' });
+        }
+      }
+    }
+
     for (const id of ids) {
       try {
         if (action === 'delete') {
@@ -833,7 +963,8 @@ router.post('/bulk', requireAuth, async (req: AuthenticatedRequest, res: Respons
           }
           await supabase.from('items').update(patch).eq('id', id).eq('user_id', userId);
         } else if (action === 'move' && collection_id !== undefined) {
-          await fallbackDb.updateItemMetadata(userId, id, { collection_id: collection_id || null }, supabase);
+          await supabase.from('items').update({ collection_id: targetColId }).eq('id', id).eq('user_id', userId);
+          await fallbackDb.updateItemMetadata(userId, id, { collection_id: targetColId }, supabase);
         } else if (action === 'favorite' && is_favorite !== undefined) {
           await supabase.from('items').update({ is_favorite }).eq('id', id).eq('user_id', userId);
         }
@@ -847,11 +978,58 @@ router.post('/bulk', requireAuth, async (req: AuthenticatedRequest, res: Respons
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/items/reclassify — Background reclassification stub
+// POST /api/items/reclassify — Perform AI folder reclassification
 // ---------------------------------------------------------------------------
 
 router.post('/reclassify', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  return res.json({ message: 'Reclassification started in background' });
+  const userId = getUserId(req);
+  try {
+    const { item_ids } = req.body || {};
+
+    // Fetch target items for this user
+    let query = supabase.from('items').select('*').eq('user_id', userId);
+    if (Array.isArray(item_ids) && item_ids.length > 0) {
+      query = query.in('id', item_ids);
+    }
+    const { data: items, error: itemsErr } = await query;
+    if (itemsErr || !items || items.length === 0) {
+      return res.json({
+        reclassified_count: 0,
+        message: 'No items available to reclassify.',
+        updated_items: [],
+      });
+    }
+
+    let reclassifiedCount = 0;
+    const reclassifiedItems: any[] = [];
+
+    for (const item of items) {
+      const bestMatchId = await determineFolderForItem(userId, {
+        id: item.id,
+        title: item.title,
+        tags: item.tags,
+        source_type: item.source_type,
+        url: item.url,
+        ai_summary: item.ai_summary,
+        description: item.description,
+      }, supabase);
+
+      if (bestMatchId && bestMatchId !== item.collection_id) {
+        await supabase.from('items').update({ collection_id: bestMatchId }).eq('id', item.id).eq('user_id', userId);
+        await fallbackDb.updateItemMetadata(userId, item.id, { collection_id: bestMatchId }, supabase);
+        reclassifiedCount++;
+        reclassifiedItems.push({ id: item.id, collection_id: bestMatchId });
+      }
+    }
+
+    return res.json({
+      message: `AI reclassified ${reclassifiedCount} items successfully`,
+      reclassified_count: reclassifiedCount,
+      updated_items: reclassifiedItems,
+    });
+  } catch (err: any) {
+    return res.status(400).json({ detail: err.message || String(err) });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -890,11 +1068,43 @@ router.post('/recalculate-priorities', requireAuth, async (req: AuthenticatedReq
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/items/suggest-collection — Collection suggestion stub
+// POST /api/items/suggest-collection — AI Collection suggestion handler
 // ---------------------------------------------------------------------------
 
 router.post('/suggest-collection', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  return res.json({ suggested_collection_id: null, name: 'Reading List', color: 'blue', is_new: true });
+  const userId = getUserId(req);
+  try {
+    const { title = '', url = '', tags = [] } = req.body || {};
+    let { data: collections } = await supabase.from('collections').select('*').eq('user_id', userId);
+    if (!collections || collections.length === 0) {
+      collections = await fallbackDb.listCollections(userId, supabase);
+    }
+
+    const textToMatch = `${title} ${url} ${(tags || []).join(' ')}`.toLowerCase();
+
+    if (collections && collections.length > 0) {
+      for (const col of collections) {
+        const colNameLower = col.name.toLowerCase().trim();
+        if (textToMatch.includes(colNameLower)) {
+          return res.json({
+            suggested_collection_id: col.id,
+            name: col.name,
+            color: col.color || 'blue',
+            is_new: false,
+          });
+        }
+      }
+    }
+
+    return res.json({
+      suggested_collection_id: null,
+      name: 'Reading List',
+      color: 'blue',
+      is_new: true,
+    });
+  } catch (err: any) {
+    return res.json({ suggested_collection_id: null, name: 'Reading List', color: 'blue', is_new: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1036,6 +1246,12 @@ router.put('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response)
 
     if (collection_id !== undefined) {
       const colVal = collection_id || null;
+      if (colVal) {
+        const { data: col } = await supabase.from('collections').select('id').eq('id', colVal).eq('user_id', userId).maybeSingle();
+        if (!col) {
+          return res.status(400).json({ detail: 'Invalid or unauthorized collection_id' });
+        }
+      }
       updateData.collection_id = colVal;
       localUpdates.collection_id = colVal;
     }
@@ -1056,8 +1272,8 @@ router.put('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response)
       }
     }
 
-    // Metadata field routing
-    const metaOnly = ['collection_id', 'read_progress', 'full_summary', 'actual_time_spent'];
+    // Metadata field routing — preserve collection_id for Supabase items column
+    const metaOnly = ['read_progress', 'full_summary', 'actual_time_spent'];
     const remoteData: Record<string, any> = { ...updateData };
     metaOnly.forEach(f => { if (f in localUpdates) delete remoteData[f]; });
 
@@ -1132,11 +1348,18 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res: Respons
 
     if (collection_id !== undefined) {
       const colVal = collection_id || null;
+      if (colVal) {
+        const { data: col } = await supabase.from('collections').select('id').eq('id', colVal).eq('user_id', userId).maybeSingle();
+        if (!col) {
+          return res.status(400).json({ detail: 'Invalid or unauthorized collection_id' });
+        }
+      }
+      updateData.collection_id = colVal;
       localUpdates.collection_id = colVal;
     }
 
-    // Route metadata fields — strip unmapped columns from Supabase update payload
-    ['collection_id', 'read_progress', 'actual_time_spent'].forEach(f => {
+    // Route metadata fields — strip unmapped columns ONLY if missing in schema
+    ['read_progress', 'actual_time_spent'].forEach(f => {
       if (!(fallbackDb as any)[`has_${f}`]) {
         delete updateData[f];
       }

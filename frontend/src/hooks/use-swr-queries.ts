@@ -174,8 +174,13 @@ export function useReminders() {
     }
   );
 
+  const normalizedData = data ? {
+    ...data,
+    active_reminders: data.active_reminders || data.reminders || [],
+  } : undefined;
+
   return {
-    reminders: data,
+    reminders: normalizedData,
     error,
     isLoading: !shouldFetch || isLoading,
     mutateReminders,

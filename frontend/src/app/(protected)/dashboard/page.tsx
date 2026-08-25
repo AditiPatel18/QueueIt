@@ -28,6 +28,8 @@ import type { User as SupabaseUser } from "@supabase/supabase-js";
 import dynamic from "next/dynamic";
 import { QueueList } from "@/components/queue-list";
 import { CollectionsSidebar } from "@/components/collections-sidebar";
+import { Navbar } from "@/components/navbar";
+import { Footer } from "@/components/footer";
 import { toast } from "sonner";
 import { getItem } from "@/lib/api";
 
@@ -96,6 +98,22 @@ function DashboardContent() {
     return user.user_metadata?.full_name || user.email?.split("@")[0] || "User";
   };
 
+  const CONTENT_TYPES = [
+    "Articles",
+    "Videos",
+    "PDFs",
+    "GitHub Repositories",
+    "Web Pages",
+  ];
+  const [contentTypeIndex, setContentTypeIndex] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setContentTypeIndex((prev) => (prev + 1) % CONTENT_TYPES.length);
+    }, 2200);
+    return () => clearInterval(interval);
+  }, []);
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -113,122 +131,26 @@ function DashboardContent() {
       </div>
 
       {/* Navigation */}
-      <nav className="relative z-10 border-b border-border/30 glass">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg gradient-primary">
-              <LayersIcon className="h-4 w-4 text-white" />
-            </div>
-            <span className="text-lg font-bold tracking-tight">QueueIt</span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Link href="/chat">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground cursor-pointer flex items-center gap-1"
-              >
-                <Sparkles className="h-3.5 w-3.5 text-primary" />
-                AI Chat
-              </Button>
-            </Link>
-
-            <Link href="/history">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                History
-              </Button>
-            </Link>
-
-            <Link href="/analytics">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                Analytics
-              </Button>
-            </Link>
-
-            <RemindersPopover />
-
-            <AddItemDialog
-              trigger={
-                <Button
-                  id="add-content-btn"
-                  size="sm"
-                  className="gradient-primary text-white border-0 hover:opacity-90 transition-opacity cursor-pointer glow-primary"
-                >
-                  <Plus className="mr-1 h-4 w-4" />
-                  Add Content
-                </Button>
-              }
-              onItemAdded={handleItemAdded}
-            />
-
-            {user && (
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 cursor-pointer transition-colors"
-                  id="user-menu-btn"
-                >
-                  <Avatar className="h-8 w-8">
-                    <AvatarImage
-                      src={user.user_metadata?.avatar_url}
-                      alt={getDisplayName(user)}
-                    />
-                    <AvatarFallback className="bg-primary/20 text-primary text-xs font-semibold">
-                      {getInitials(user)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <ChevronDownIcon className="h-3 w-3 text-muted-foreground" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56 glass-strong border-border/30">
-                  <div className="px-3 py-2">
-                    <p className="text-sm font-medium">{getDisplayName(user)}</p>
-                    <p className="text-xs text-muted-foreground">{user.email}</p>
-                  </div>
-                  <DropdownMenuSeparator className="bg-border/30" />
-                  <Link href="/profile">
-                    <DropdownMenuItem className="cursor-pointer">
-                      <User className="mr-2 h-4 w-4" />
-                      Profile
-                    </DropdownMenuItem>
-                  </Link>
-                  <DropdownMenuSeparator className="bg-border/30" />
-                  <DropdownMenuItem
-                    className="cursor-pointer text-destructive focus:text-destructive"
-                    onClick={handleLogout}
-                    disabled={loggingOut}
-                  >
-                    {loggingOut ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <LogOutIcon className="mr-2 h-4 w-4" />
-                    )}
-                    Log out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </div>
-        </div>
-      </nav>
+      <Navbar onItemAdded={handleItemAdded} />
 
       {/* Main content */}
       <main className="relative z-10 mx-auto max-w-7xl px-6 py-12 space-y-10">
-        {/* Welcome section */}
+        {/* Welcome section with animated rotating text */}
         <div>
           <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
             Welcome back,{" "}
             <span className="gradient-text">{user ? getDisplayName(user) : ""}</span>
           </h1>
-          <p className="mt-2 text-muted-foreground text-lg">
-            Your content queue is ready. What will you save today?
+          <p className="mt-2 text-muted-foreground text-base sm:text-lg flex flex-wrap items-center gap-1.5">
+            <span>Ready to queue your next</span>
+            <span className="inline-block relative h-7 w-[210px] overflow-hidden align-middle">
+              <span
+                key={contentTypeIndex}
+                className="absolute inset-0 font-bold gradient-text flex items-center animate-in fade-in slide-in-from-bottom-1 duration-300"
+              >
+                {CONTENT_TYPES[contentTypeIndex]}
+              </span>
+            </span>
           </p>
         </div>
 
@@ -286,6 +208,9 @@ function DashboardContent() {
           ))}
         </div>
       </main>
+
+      {/* Shared Footer */}
+      <Footer />
     </div>
   );
 }

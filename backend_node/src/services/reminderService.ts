@@ -236,7 +236,7 @@ export class ReminderService {
       const itemsById: Record<string, any> = {};
       if (itemIds.length > 0) {
         try {
-          const selCols = ['id', 'title', 'priority_score', 'estimated_read_time'];
+          const selCols = ['id', 'title', 'url', 'priority_score', 'estimated_read_time'];
           if (fallbackDb.has_estimated_time_minutes) {
             selCols.push('estimated_time_minutes');
           }
@@ -258,6 +258,7 @@ export class ReminderService {
         const item = itemsById[r.item_id];
         if (item) {
           r.title = item.title || r.title;
+          r.url = item.url || null;
           const pScore = item.priority_score || 50.0;
           if (pScore >= 75) {
             r.priority = 'High';
@@ -344,7 +345,7 @@ export class ReminderService {
       const itemsById: Record<string, any> = {};
       if (itemIds.length > 0) {
         try {
-          const itemRes = await supabase.from('items').select('id, title').in('id', itemIds);
+          const itemRes = await supabase.from('items').select('id, title, url').in('id', itemIds);
           if (itemRes.data) {
             for (const it of itemRes.data) {
               itemsById[it.id] = it;
@@ -359,6 +360,7 @@ export class ReminderService {
         const item = itemsById[r.item_id];
         if (item && item.title) {
           r.title = item.title;
+          r.url = item.url || null;
         } else {
           let titleClean = r.title;
           if (titleClean.startsWith("Time to read: '") && titleClean.endsWith("' (High priority)")) {
@@ -367,6 +369,7 @@ export class ReminderService {
             titleClean = titleClean.substring("Time to read: '".length, titleClean.length - 1);
           }
           r.title = titleClean;
+          r.url = null;
         }
         r.reminder_item_id = r.item_id;
         res.push(r);

@@ -34,6 +34,9 @@ import {
 } from "lucide-react";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { useReadingAnalytics, useStreakHeatmap } from "@/hooks/use-swr-queries";
+import { Navbar } from "@/components/navbar";
+import { Footer } from "@/components/footer";
+import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -176,7 +179,7 @@ export default function AnalyticsPage() {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
-        alert("Unauthorized — no session");
+        toast.error("Unauthorized — please log in to export");
         return;
       }
 
@@ -187,7 +190,10 @@ export default function AnalyticsPage() {
         },
       });
 
-      if (!response.ok) throw new Error("CSV Export failed");
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(errorText || `Export failed with status ${response.status}`);
+      }
 
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -198,9 +204,10 @@ export default function AnalyticsPage() {
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
+      toast.success("Analytics CSV exported successfully!");
     } catch (err) {
       console.error("Export error", err);
-      alert("Failed to export CSV: " + (err instanceof Error ? err.message : String(err)));
+      toast.error("Failed to export CSV: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setExporting(false);
     }
@@ -334,85 +341,7 @@ export default function AnalyticsPage() {
       </div>
 
       {/* Nav */}
-      <nav className="relative z-10 border-b border-border/30 glass">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg gradient-primary">
-              <LayersIcon className="h-4 w-4 text-white" />
-            </div>
-            <span className="text-lg font-bold tracking-tight">QueueIt</span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Link href="/dashboard">
-              <Button
-                variant="outline"
-                size="sm"
-                className="glass-strong border-border/30 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                <ArrowLeft className="mr-1 h-4 w-4" />
-                Back to Dashboard
-              </Button>
-            </Link>
-
-            <Link href="/analytics">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-foreground hover:text-foreground bg-accent/30 font-semibold cursor-pointer"
-              >
-                Analytics
-              </Button>
-            </Link>
-
-            {user && (
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 cursor-pointer transition-colors"
-                  id="user-menu-btn"
-                >
-                  <Avatar className="h-8 w-8">
-                    <AvatarImage
-                      src={user.user_metadata?.avatar_url}
-                      alt={getDisplayName(user)}
-                    />
-                    <AvatarFallback className="bg-primary/20 text-primary text-xs font-semibold">
-                      {getInitials(user)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <ChevronDownIcon className="h-3 w-3 text-muted-foreground" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56 glass-strong border-border/30">
-                  <div className="px-3 py-2">
-                    <p className="text-sm font-medium">{getDisplayName(user)}</p>
-                    <p className="text-xs text-muted-foreground">{user.email}</p>
-                  </div>
-                  <DropdownMenuSeparator className="bg-border/30" />
-                  <Link href="/profile">
-                    <DropdownMenuItem className="cursor-pointer">
-                      <User className="mr-2 h-4 w-4" />
-                      Profile
-                    </DropdownMenuItem>
-                  </Link>
-                  <DropdownMenuSeparator className="bg-border/30" />
-                  <DropdownMenuItem
-                    className="cursor-pointer text-destructive focus:text-destructive"
-                    onClick={handleLogout}
-                    disabled={loggingOut}
-                  >
-                    {loggingOut ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <LogOutIcon className="mr-2 h-4 w-4" />
-                    )}
-                    Log out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </div>
-        </div>
-      </nav>
+      <Navbar />
 
       {/* Main */}
       <main className="relative z-10 mx-auto max-w-7xl px-6 py-12 space-y-8">
@@ -826,6 +755,9 @@ export default function AnalyticsPage() {
 
 
       </main>
+
+      {/* Shared Footer */}
+      <Footer />
 
       {/* Global floating tooltip for heatmap cells */}
       {tooltip && (

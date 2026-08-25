@@ -7,29 +7,28 @@ export class AnalyticsService {
    * Helper to calculate estimated reading time of an item in minutes.
    */
   static getItemReadingTime(item: any): number {
-    const estMin = item.estimated_time_minutes;
-    if (estMin !== undefined && estMin !== null) {
-      const parsed = parseFloat(estMin);
-      if (!isNaN(parsed)) {
-        return parsed;
-      }
+    const isYT = item.content_type === 'youtube' || item.source_type === 'youtube' || (item.url || '').includes('youtube.com') || (item.url || '').includes('youtu.be');
+
+    // 1. YouTube video duration from duration_seconds (in seconds)
+    if (isYT && item.duration_seconds != null && !isNaN(parseFloat(item.duration_seconds)) && parseFloat(item.duration_seconds) > 0) {
+      return parseFloat(item.duration_seconds) / 60.0;
     }
 
-    const estSec = item.estimated_read_time || item.duration_seconds;
-    if (estSec !== undefined && estSec !== null) {
-      const parsed = parseFloat(estSec);
-      if (!isNaN(parsed)) {
-        return parsed / 60.0;
-      }
+    // 2. Stored estimated reading time in minutes
+    if (item.estimated_read_time != null && !isNaN(parseFloat(item.estimated_read_time)) && parseFloat(item.estimated_read_time) > 0) {
+      return parseFloat(item.estimated_read_time);
     }
 
+    if (item.estimated_time_minutes != null && !isNaN(parseFloat(item.estimated_time_minutes)) && parseFloat(item.estimated_time_minutes) > 0) {
+      return parseFloat(item.estimated_time_minutes);
+    }
+
+    // 3. Fallback: calculate from extracted text word count (~225 words/min)
     const text = item.extracted_text;
     if (text) {
-      const words = text.trim().split(/\s+/).length;
+      const words = text.trim().split(/\s+/).filter(Boolean).length;
       if (words > 0) {
-        const sourceType = item.source_type || item.content_type || 'generic';
-        const wpm = sourceType === 'pdf' ? 180.0 : 200.0;
-        return Math.ceil(words / wpm);
+        return Math.ceil(words / 225.0);
       }
     }
 

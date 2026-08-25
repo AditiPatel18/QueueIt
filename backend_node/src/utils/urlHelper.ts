@@ -28,6 +28,60 @@ export function normalizeUrl(rawUrl: string): string {
 }
 
 /**
+ * Validates a URL to prevent SSRF and malicious protocol schemes.
+ */
+export function isSafeUrl(rawUrl: string): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  const trimmed = rawUrl.trim();
+  let parsed: URL;
+  try {
+    let fullUrl = trimmed;
+    if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
+      fullUrl = 'https://' + fullUrl;
+    }
+    parsed = new URL(fullUrl);
+  } catch {
+    return false;
+  }
+
+  // Protocol check: only allow http and https
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return false;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  // Reject local/internal hostnames
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.localhost')
+  ) {
+    return false;
+  }
+
+  // Reject IPv4 loopback, private, link-local, broadcast addresses
+  // 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 0.0.0.0
+  const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+  const match = hostname.match(ipv4Regex);
+  if (match) {
+    const [, a, b] = match.map(n => parseInt(n, 10));
+    if (a === 127 || a === 10 || a === 0) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 169 && b === 254) return false;
+  }
+
+  // Reject IPv6 loopback / unspecified
+  if (hostname === '::1' || hostname === '[::1]' || hostname === '0:0:0:0:0:0:0:1') {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Detect source type from URL.
  */
 export function detectSourceType(url: string): string {

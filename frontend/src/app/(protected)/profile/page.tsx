@@ -32,6 +32,8 @@ import { toast } from "sonner";
 import { useAnalytics, ANALYTICS_CACHE_KEY } from "@/hooks/use-swr-queries";
 import { mutate } from "swr";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
+import { Navbar } from "@/components/navbar";
+import { Footer } from "@/components/footer";
 
 const ICON_MAP = {
   Inbox: Inbox,
@@ -209,39 +211,7 @@ export default function ProfilePage() {
       </div>
 
       {/* Navigation */}
-      <nav className="relative z-10 border-b border-border/30 glass">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg gradient-primary">
-              <LayersIcon className="h-4 w-4 text-white" />
-            </div>
-            <span className="text-lg font-bold tracking-tight">QueueIt</span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Link href="/dashboard">
-              <Button
-                variant="outline"
-                size="sm"
-                className="glass-strong border-border/30 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                <ArrowLeft className="mr-1 h-4 w-4" />
-                Back to Dashboard
-              </Button>
-            </Link>
-
-            <Link href="/analytics">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                Analytics
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </nav>
+      <Navbar />
 
       {/* Main content layout */}
       <main className="relative z-10 mx-auto max-w-6xl px-6 py-12">
@@ -670,6 +640,9 @@ export default function ProfilePage() {
           </div>
         </div>
       </main>
+
+      {/* Shared Footer */}
+      <Footer />
     </div>
   );
 }

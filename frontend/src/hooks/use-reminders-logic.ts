@@ -13,16 +13,15 @@ import {
 import { toast } from "sonner";
 
 export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "reminders") {
-  // Fetch alerts & settings only when popover is open (lazy-loaded on bell click)
-  const shouldFetchAlerts = true;
-
-  // 1. Fetch alerts & settings (include_history=false, include_settings=true, include_gamification=false)
+  // Fetch alerts & settings with auto-refresh when popover is active
   const { data: alertsData, mutate: mutateAlerts } = useSWR(
     ["api/reminders", false, true, false],
     () => getReminders(false, true, false),
     {
-      revalidateOnFocus: false,
-      dedupingInterval: 30000,
+      revalidateOnFocus: true,
+      revalidateOnMount: true,
+      refreshInterval: isOpen ? 10000 : 30000,
+      dedupingInterval: 5000,
     }
   );
 
@@ -33,7 +32,7 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
     () => getReminders(true, false, false),
     {
       revalidateOnFocus: false,
-      dedupingInterval: 30000,
+      dedupingInterval: 15000,
     }
   );
 
@@ -44,7 +43,7 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
     () => getReminders(false, false, true),
     {
       revalidateOnFocus: false,
-      dedupingInterval: 30000,
+      dedupingInterval: 15000,
     }
   );
 
@@ -61,9 +60,9 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
       browser_notifications: true,
       email_reminders: true
     },
-    active_reminders: alertsData?.active_reminders || [],
+    active_reminders: alertsData?.active_reminders || alertsData?.reminders || [],
     unread_count: alertsData?.unread_count ?? 0,
-    history: historyData?.history || [],
+    history: historyData?.history || alertsData?.history || [],
     gamification: {
       user_id: gamificationData?.gamification?.user_id || "",
       xp: gamificationData?.gamification?.xp ?? 0,
@@ -140,6 +139,36 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
     }
   }, [mutateReminders]);
 
+  const handleNotificationClick = useCallback(async (rem: any) => {
+    if (!rem || !rem.id) return;
+    try {
+      // Mark reminder as read in backend database
+      await readReminder(rem.id);
+      mutateReminders();
+
+      // Open target URL
+      let targetUrl = rem.url;
+      const itemId = rem.item_id || rem.reminder_item_id;
+      if (!targetUrl || typeof targetUrl !== "string" || !targetUrl.startsWith("http")) {
+        if (itemId) {
+          targetUrl = `/dashboard?item=${itemId}`;
+        } else {
+          targetUrl = "/dashboard";
+        }
+      }
+
+      if (typeof window !== "undefined") {
+        if (targetUrl.startsWith("http")) {
+          window.open(targetUrl, "_blank", "noopener,noreferrer");
+        } else {
+          window.location.href = targetUrl;
+        }
+      }
+    } catch (err) {
+      console.error("[useRemindersLogic] Error handling notification click:", err);
+    }
+  }, [mutateReminders]);
+
   const handleSaveSettings = useCallback(async () => {
     try {
       setIsSavingSettings(true);
@@ -174,17 +203,17 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
     }
   }, [mutateReminders]);
 
-  const rawActiveList = reminders.active_reminders || [];
+  const rawActiveList = Array.isArray(reminders?.active_reminders) ? reminders.active_reminders : [];
   const activeList = rawActiveList.filter((rem, index, self) =>
-    self.findIndex(r => (r.item_id && r.item_id === rem.item_id) || r.title === rem.title) === index
+    self.findIndex(r => (r?.id && r.id === rem.id) || (r?.item_id && r.item_id === rem.item_id) || r?.title === rem.title) === index
   );
 
-  const rawHistoryList = reminders.history || [];
+  const rawHistoryList = Array.isArray(reminders?.history) ? reminders.history : [];
   const historyList = rawHistoryList.filter((rem, index, self) =>
-    self.findIndex(r => (r.item_id && r.item_id === rem.item_id) || r.title === rem.title) === index
+    self.findIndex(r => (r?.id && r.id === rem.id) || (r?.item_id && r.item_id === rem.item_id) || r?.title === rem.title) === index
   );
 
-  const unreadCount = activeList.length;
+  const unreadCount = (activeList || []).length;
   const settings = reminders.settings;
   const gamification = reminders.gamification;
 
@@ -212,6 +241,7 @@ export function useRemindersLogic(isOpen: boolean = false, activeTab: string = "
     handleSnooze,
     handleComplete,
     handleDismiss,
+    handleNotificationClick,
     handleSaveSettings,
     handleUseFreeze,
     mutateReminders,

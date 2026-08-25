@@ -42,14 +42,17 @@ export default function SignUpPage() {
     setLoading(true);
     setError(null);
 
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = fullName.trim();
     const supabase = createClient();
 
-    const { error } = await supabase.auth.signUp({
-      email,
+    const { data, error } = await supabase.auth.signUp({
+      email: cleanEmail,
       password,
       options: {
         data: {
-          full_name: fullName,
+          full_name: cleanName,
+          name: cleanName,
         },
       },
     });
@@ -60,10 +63,14 @@ export default function SignUpPage() {
       return;
     }
 
+    if (data.session) {
+      window.location.href = "/dashboard";
+      return;
+    }
+
     setSuccess(true);
     setLoading(false);
 
-    // If email confirmation is disabled, redirect immediately
     setTimeout(() => {
       router.push("/dashboard");
       router.refresh();

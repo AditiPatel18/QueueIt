@@ -118,36 +118,53 @@
   }
 }
 
-/* Custom utilities for QueueIt */
+/* Custom utilities for QueueIt — Modern Dark SaaS Design */
 @layer utilities {
   .glass {
-    background: oklch(0.13 0.01 270 / 60%);
-    backdrop-filter: blur(20px) saturate(1.5);
-    border: 1px solid oklch(1 0 0 / 8%);
+    background: oklch(0.12 0.012 270 / 65%);
+    backdrop-filter: blur(24px) saturate(1.6);
+    border: 1px solid oklch(1 0 0 / 9%);
   }
 
   .glass-strong {
-    background: oklch(0.13 0.01 270 / 80%);
-    backdrop-filter: blur(30px) saturate(1.8);
-    border: 1px solid oklch(1 0 0 / 12%);
+    background: oklch(0.12 0.012 270 / 85%);
+    backdrop-filter: blur(32px) saturate(1.9);
+    border: 1px solid oklch(1 0 0 / 14%);
+  }
+
+  .glass-card {
+    background: linear-gradient(135deg, oklch(0.14 0.015 270 / 75%), oklch(0.11 0.01 270 / 60%));
+    backdrop-filter: blur(20px) saturate(1.5);
+    border: 1px solid oklch(1 0 0 / 8%);
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .glass-card:hover {
+    border-color: oklch(0.65 0.2 270 / 30%);
+    box-shadow: 0 10px 30px -10px oklch(0.65 0.2 270 / 15%);
+    transform: translateY(-2px);
   }
 
   .glow-primary {
     box-shadow:
-      0 0 20px oklch(0.65 0.2 270 / 20%),
-      0 0 60px oklch(0.65 0.2 270 / 10%);
+      0 0 20px oklch(0.65 0.2 270 / 25%),
+      0 0 50px oklch(0.65 0.2 270 / 12%);
   }
 
   .glow-text {
-    text-shadow: 0 0 30px oklch(0.65 0.2 270 / 40%);
+    text-shadow: 0 0 30px oklch(0.65 0.2 270 / 45%);
   }
 
   .gradient-primary {
-    background: linear-gradient(135deg, oklch(0.6 0.22 270), oklch(0.55 0.2 300));
+    background: linear-gradient(135deg, oklch(0.62 0.22 270), oklch(0.58 0.2 295), oklch(0.55 0.18 325));
+  }
+
+  .gradient-subtle {
+    background: linear-gradient(135deg, oklch(0.65 0.2 270 / 15%), oklch(0.55 0.18 300 / 5%));
   }
 
   .gradient-text {
-    background: linear-gradient(135deg, oklch(0.75 0.18 270), oklch(0.7 0.16 300), oklch(0.65 0.14 330));
+    background: linear-gradient(135deg, oklch(0.85 0.12 270), oklch(0.75 0.18 295), oklch(0.7 0.16 330));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -165,11 +182,27 @@
     background-size: 200% 200%;
     animation: gradient-shift 8s ease infinite;
   }
+
+  /* Custom scrollbar for modern sleek feel */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: oklch(1 0 0 / 15%);
+    border-radius: 9999px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: oklch(1 0 0 / 30%);
+  }
 }
 
 @keyframes float {
   0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-10px); }
+  50% { transform: translateY(-8px); }
 }
 
 @keyframes gradient-shift {

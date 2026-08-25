@@ -7,46 +7,59 @@ import { resolvePlatformInfo } from '../utils/urlHelper';
 
 dotenv.config();
 
-/** Helper function to extract YouTube transcript/content using Python backend extractor */
-function fetchYouTubeContent(url: string): Promise<{ transcript: string; title?: string }> {
-  return new Promise((resolve) => {
-    try {
-      const backendDir = path.resolve(__dirname, '../../../backend');
-      const pyCode = `
-import json, sys
-sys.path.insert(0, '.')
-try:
-    from services.youtube_extractor import extract_youtube
-    res = extract_youtube(sys.argv[1])
-    print("OUTPUT_JSON:" + json.dumps({'transcript': res.get('transcript') or '', 'title': res.get('title') or ''}))
-except Exception as e:
-    print("OUTPUT_JSON:" + json.dumps({'transcript': '', 'error': str(e)}))
-`;
-      execFile('python', ['-c', pyCode, url], { cwd: backendDir, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-        if (err || !stdout) {
-          console.warn('[AIService] Python YouTube extraction failed:', err?.message || stderr);
-          resolve({ transcript: '' });
-          return;
-        }
-        try {
-          const match = stdout.split('\n').find(line => line.startsWith('OUTPUT_JSON:'));
-          if (!match) {
-            resolve({ transcript: '' });
-            return;
-          }
-          const jsonStr = match.replace('OUTPUT_JSON:', '').trim();
-          const parsed = JSON.parse(jsonStr);
-          resolve({ transcript: parsed.transcript || '', title: parsed.title || '' });
-        } catch (e) {
-          console.warn('[AIService] JSON parse error:', e);
-          resolve({ transcript: '' });
-        }
-      });
-    } catch (e) {
-      console.warn('[AIService] Exception during YouTube extraction:', e);
-      resolve({ transcript: '' });
+/** Helper function to extract YouTube metadata, duration, and transcript in Node.js */
+async function fetchYouTubeContent(url: string): Promise<{ transcript: string; title?: string; durationSeconds?: number }> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    });
+    const html = await res.text();
+
+    // Extract Title
+    const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
+    let title = titleMatch ? titleMatch[1].replace(' - YouTube', '').trim() : '';
+
+    // Extract ISO 8601 duration (itemprop="duration" content="PT13M42S") or lengthSeconds / approxDurationMs
+    const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
+                     html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
+                     html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
+
+    let durationSeconds = 0;
+    if (isoMatch) {
+      const hours = parseInt(isoMatch[1] || '0', 10);
+      const mins = parseInt(isoMatch[2] || '0', 10);
+      const secs = parseInt(isoMatch[3] || '0', 10);
+      durationSeconds = hours * 3600 + mins * 60 + secs;
+    } else {
+      const lenMatch = html.match(/"lengthSeconds":"(\d+)"/) || html.match(/"approxDurationMs":"(\d+)"/);
+      if (lenMatch) {
+        durationSeconds = lenMatch[1].length > 6 ? Math.round(parseInt(lenMatch[1], 10) / 1000) : parseInt(lenMatch[1], 10);
+      }
     }
-  });
+
+    // Extract transcript caption tracks if available
+    let transcript = '';
+    const captionMatch = html.match(/"captionTracks":\s*(\[.*?\])/);
+    if (captionMatch) {
+      try {
+        const tracks = JSON.parse(captionMatch[1]);
+        const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
+        if (enTrack?.baseUrl) {
+          const capRes = await fetch(enTrack.baseUrl);
+          const capXml = await capRes.text();
+          transcript = capXml.replace(/<text[^>]*>/g, ' ').replace(/<\/text>/g, ' ').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
+        }
+      } catch { /* non-fatal caption parse */ }
+    }
+
+    return { transcript, title, durationSeconds };
+  } catch (e) {
+    console.warn('[AIService] YouTube extraction error:', e);
+    return { transcript: '' };
+  }
 }
 
 /** Translate non-English transcript text to clear English using Gemini API */
@@ -188,6 +201,115 @@ function cleanSummaryText(rawText: string): string {
   return cleaned;
 }
 
+export async function determineFolderForItem(
+  userId: string,
+  item: {
+    id: string;
+    title?: string;
+    tags?: string[];
+    source_type?: string;
+    url?: string;
+    ai_summary?: string;
+    description?: string;
+  },
+  supabaseClient: any
+): Promise<string | null> {
+  try {
+    const collections = await fallbackDb.listCollections(userId, supabaseClient);
+
+    const titleLower = (item.title || '').toLowerCase();
+    const tagsArr = Array.isArray(item.tags)
+      ? item.tags.map((t) => (t || '').toLowerCase().trim()).filter((t) => t && t !== 'uncategorized' && t !== 'general' && t !== 'article' && t !== 'web')
+      : [];
+    const sourceType = (item.source_type || '').toLowerCase();
+    const urlLower = (item.url || '').toLowerCase();
+    const summaryLower = (item.ai_summary || item.description || '').toLowerCase();
+    const combinedText = `${titleLower} ${tagsArr.join(' ')} ${sourceType} ${urlLower} ${summaryLower}`;
+
+    // 1. Check existing user folders (prevent duplicates)
+    if (collections && collections.length > 0) {
+      for (const col of collections) {
+        const colNameLower = (col.name || '').toLowerCase().trim();
+        if (!colNameLower) continue;
+
+        if (combinedText.includes(colNameLower)) {
+          return col.id;
+        }
+
+        const keywords = colNameLower.split(/\s+/).filter((k: string) => k.length > 2);
+        const matchCount = keywords.filter((kw: string) => combinedText.includes(kw)).length;
+        if (matchCount > 0) {
+          return col.id;
+        }
+      }
+    }
+
+    // 2. Determine folder category name and color if missing
+    let targetCategory = '';
+    let targetColor = 'blue';
+
+    if (tagsArr.length > 0) {
+      const primaryTag = tagsArr[0];
+      if (primaryTag.includes('ai') || primaryTag.includes('llm') || primaryTag.includes('gpt')) {
+        targetCategory = 'AI';
+        targetColor = 'purple';
+      } else if (primaryTag.includes('code') || primaryTag.includes('tech') || primaryTag.includes('dev') || primaryTag.includes('python') || primaryTag.includes('rust')) {
+        targetCategory = 'Tech';
+        targetColor = 'purple';
+      } else if (primaryTag.includes('research') || primaryTag.includes('science') || primaryTag.includes('paper')) {
+        targetCategory = 'Research';
+        targetColor = 'green';
+      } else if (primaryTag.includes('design') || primaryTag.includes('css') || primaryTag.includes('ui')) {
+        targetCategory = 'Design';
+        targetColor = 'orange';
+      } else if (primaryTag.includes('business') || primaryTag.includes('finance') || primaryTag.includes('market')) {
+        targetCategory = 'Business';
+        targetColor = 'yellow';
+      } else {
+        targetCategory = primaryTag.charAt(0).toUpperCase() + primaryTag.slice(1);
+        targetColor = 'blue';
+      }
+    }
+
+    if (!targetCategory) {
+      if (sourceType === 'youtube' || urlLower.includes('youtube.com') || urlLower.includes('youtu.be')) {
+        targetCategory = 'Videos';
+        targetColor = 'red';
+      } else if (sourceType === 'github' || urlLower.includes('github.com')) {
+        targetCategory = 'Development';
+        targetColor = 'purple';
+      } else if (urlLower.endsWith('.pdf') || titleLower.includes('pdf')) {
+        targetCategory = 'PDFs';
+        targetColor = 'orange';
+      } else if (titleLower.includes('research') || summaryLower.includes('research')) {
+        targetCategory = 'Research';
+        targetColor = 'green';
+      } else {
+        targetCategory = 'Articles';
+        targetColor = 'blue';
+      }
+    }
+
+    // Double check if folder with targetCategory already exists for user (case-insensitive)
+    if (collections && collections.length > 0) {
+      const existingSameName = collections.find((col: any) =>
+        (col.name || '').toLowerCase().trim() === targetCategory.toLowerCase().trim()
+      );
+      if (existingSameName) {
+        return existingSameName.id;
+      }
+    }
+
+    // 3. Create missing folder for this user
+    console.log(`[AutoFolder] Creating missing folder "${targetCategory}" (${targetColor}) for user ${userId}...`);
+    const newCol = await fallbackDb.createCollection(userId, targetCategory, targetColor, supabaseClient);
+    return newCol?.id || null;
+  } catch (err) {
+    console.error('[AutoFolder] Error determining/creating folder:', err);
+    return null;
+  }
+}
+
 export class AIService {
   private static getApiKey(): string | null {
     return process.env.GEMINI_API_KEY || null;
@@ -321,19 +443,20 @@ CRITICAL SUMMARIZATION RULES:
       } catch { /* non-fatal */ }
 
       const isYouTube = platformInfo.source_type === 'youtube' || url.includes('youtube.com') || url.includes('youtu.be');
+      let ytDurationSeconds = 0;
 
-      // Step 1: If transcript is missing or short, perform YouTube extraction
-      if ((!snippet || snippet.trim().length < 50) && isYouTube) {
-        console.log(`[PIPELINE LOG] [AI Service] Extracted text missing for YouTube URL. Extracting transcript...`);
+      // Step 1: If YouTube URL, extract real video metadata & duration
+      if (isYouTube) {
+        console.log(`[PIPELINE LOG] [AI Service] Extracting YouTube video metadata & duration for ${url}...`);
         const extracted = await fetchYouTubeContent(url);
+        if (extracted.durationSeconds && extracted.durationSeconds > 0) {
+          ytDurationSeconds = extracted.durationSeconds;
+        }
         if (extracted.transcript && extracted.transcript.trim()) {
           snippet = extracted.transcript;
-          if (extracted.title && extracted.title.trim()) {
-            title = extracted.title.trim();
-          }
-          console.log(`[PIPELINE LOG] [AI Service] YouTube extraction successful! Transcript length: ${snippet.length} chars.`);
-        } else {
-          console.warn(`[PIPELINE LOG] [AI Service] YouTube transcript extraction returned empty.`);
+        }
+        if (extracted.title && extracted.title.trim()) {
+          title = extracted.title.trim();
         }
       }
 
@@ -353,16 +476,47 @@ CRITICAL SUMMARIZATION RULES:
         }
       }
 
-      // Step 4: Log preview of English text being sent to Gemini
+      // Step 4: Calculate estimated time based on content type
+      let estimatedReadTime = 5;
+      let estimatedTimeMinutes = 5.0;
+
+      if (isYouTube && ytDurationSeconds > 0) {
+        // YouTube: real metadata duration
+        estimatedReadTime = Math.max(1, Math.ceil(ytDurationSeconds / 60));
+        estimatedTimeMinutes = Math.max(1, Math.round((ytDurationSeconds / 60) * 10) / 10);
+      } else {
+        // Articles: calculate from extracted text word count (~225 words/min)
+        const extractedWordCount = (snippet || '').split(/\s+/).filter(Boolean).length;
+        if (extractedWordCount > 0) {
+          estimatedReadTime = Math.max(1, Math.ceil(extractedWordCount / 225));
+          estimatedTimeMinutes = Math.max(1, Math.round((extractedWordCount / 225) * 10) / 10);
+        }
+      }
+
+      // Step 5: Log preview of text being sent to Gemini
       const snippetPreview = snippet.substring(0, 150).replace(/\r?\n/g, ' ');
       console.log(`[PIPELINE LOG] [AI Service] Text being passed to Gemini for item ${itemId} (Full Length: ${snippet.length} chars): "${snippetPreview}..."`);
 
-      // Step 5: Generate abstractive whole-content AI summary via Gemini API
+      // Step 6: Generate abstractive whole-content AI summary via Gemini API
       const result = await this.generateSummary(title, url, platformInfo.source_type, snippet);
 
-      const wordCount = result.summary.split(/\s+/).filter(Boolean).length;
-      const estimatedReadTime = Math.max(1, Math.round(wordCount / 35) || 3);
-      const estimatedTimeMinutes = estimatedReadTime * 1.0;
+      // Auto-determine folder, create if missing, and assign collection_id
+      let collectionId: string | null = null;
+      try {
+        const { data: itemRow } = await supabase.from('items').select('collection_id').eq('id', itemId).maybeSingle();
+        collectionId = itemRow?.collection_id || null;
+      } catch { /* non-fatal */ }
+
+      if (!collectionId) {
+        collectionId = await determineFolderForItem(userId, {
+          id: itemId,
+          title,
+          tags: result.tags,
+          source_type: platformInfo.source_type,
+          url,
+          ai_summary: result.summary,
+        }, supabase);
+      }
 
       const updatePayload: Record<string, any> = {
         ai_summary: result.summary,
@@ -372,38 +526,41 @@ CRITICAL SUMMARIZATION RULES:
         priority_score: result.priority,
       };
 
+      if (ytDurationSeconds > 0) {
+        updatePayload.duration_seconds = ytDurationSeconds;
+      }
       if (platformInfo.source_name) updatePayload.source_name = platformInfo.source_name;
-      if (platformInfo.source_type) updatePayload.source_type = platformInfo.source_type;
-      if (platformInfo.source_domain) updatePayload.source_domain = platformInfo.source_domain;
-      if (platformInfo.logo_url) updatePayload.logo_url = platformInfo.logo_url;
+      if (platformInfo.source_type) updatePayload.content_type = platformInfo.source_type;
       if (snippet && snippet.trim()) updatePayload.extracted_text = snippet;
 
-      // Step 6: Update Supabase items record
+      // Step 7: Update Supabase items record cleanly
       const { error } = await supabase.from('items').update(updatePayload).eq('id', itemId);
       if (error) {
-        // Retry update with safe columns if PostgREST column missing
+        console.warn('[AIService] Supabase update warning:', error.message);
         const safePayload: Record<string, any> = {
           ai_summary: result.summary,
           tags: result.tags,
           processing_status: 'completed',
           priority_score: result.priority,
+          estimated_read_time: estimatedReadTime,
         };
-        if (snippet && snippet.trim()) safePayload.extracted_text = snippet;
+        if (ytDurationSeconds > 0) safePayload.duration_seconds = ytDurationSeconds;
         await supabase.from('items').update(safePayload).eq('id', itemId);
       }
 
       // Save local metadata
       try {
-        await fallbackDb.updateItemMetadata(userId, itemId, { estimated_time_minutes: estimatedTimeMinutes }, supabase);
+        await fallbackDb.updateItemMetadata(userId, itemId, { estimated_time_minutes: estimatedTimeMinutes, collection_id: collectionId }, supabase);
       } catch { /* non-fatal */ }
 
-      console.log(`[AIService] AI summary generation completed for item ${itemId}. Summary length: ${result.summary.length} chars (${wordCount} words).`);
+      const summaryWordCount = result.summary.split(/\s+/).filter(Boolean).length;
+      console.log(`[AIService] AI summary & folder classification completed for item ${itemId} (Folder: ${collectionId}). Summary length: ${result.summary.length} chars (${summaryWordCount} words).`);
     } catch (err: any) {
       console.error(`[AIService] processItemEnrichment error for item ${itemId}:`, err);
       try {
         await supabase.from('items').update({
-          processing_status: 'completed',
-          ai_summary: 'Summary processing completed.',
+          processing_status: 'failed',
+          ai_summary: 'AI summary processing encountered an error. Click retry to try again.',
         }).eq('id', itemId);
       } catch { /* non-fatal */ }
     }
