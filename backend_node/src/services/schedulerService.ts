@@ -205,11 +205,20 @@ export async function processPendingNotificationQueue(): Promise<void> {
 }
 
 async function startNotificationQueueWorker(): Promise<void> {
-  try {
-    await fallbackDb.ready;
-  } catch (err) {
-    console.error('[Worker] Error waiting for fallbackDb.ready:', err);
+  if (!fallbackDb.initialized) {
+    try {
+      await fallbackDb.ready;
+    } catch (err) {
+      console.error('[Worker] Cannot start worker: SQLite schema initialization failed.', err);
+      return;
+    }
   }
+
+  if (!fallbackDb.initialized) {
+    console.error('[Worker] Cannot start worker: fallbackDb is not initialized.');
+    return;
+  }
+
   console.log('[Worker] 🚀 Notification queue worker started');
   await recoverStuckProcessingRecords();
 
@@ -226,14 +235,23 @@ async function startNotificationQueueWorker(): Promise<void> {
  * Background loop that checks reminder times against user settings and schedules notifications.
  */
 export async function startReminderScheduler(): Promise<void> {
-  try {
-    await fallbackDb.ready;
-  } catch (err) {
-    console.error('[Scheduler] Error waiting for fallbackDb.ready:', err);
+  if (!fallbackDb.initialized) {
+    try {
+      await fallbackDb.ready;
+    } catch (err) {
+      console.error('[Scheduler] Cannot start reminder scheduler: SQLite schema initialization failed.', err);
+      return;
+    }
   }
+
+  if (!fallbackDb.initialized) {
+    console.error('[Scheduler] Cannot start reminder scheduler: fallbackDb is not initialized.');
+    return;
+  }
+
   console.log('[Scheduler] 🚀 Reminder scheduler started');
   
-  // Start the notification queue worker in parallel
+  // Start the notification queue worker in parallel after schema initialization is confirmed
   startNotificationQueueWorker().catch(err => {
     console.error('[Scheduler] Notification worker start failed:', err);
   });

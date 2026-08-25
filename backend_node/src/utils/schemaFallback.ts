@@ -185,6 +185,9 @@ export class SchemaFallbackManager {
       if (process.env.NODE_ENV !== 'test') {
         console.log('[SQLite] Schema initialization completed successfully');
       }
+    } catch (err) {
+      console.error('[SQLite] Error during schema initialization:', err);
+      throw err;
     } finally {
       db.close();
     }
