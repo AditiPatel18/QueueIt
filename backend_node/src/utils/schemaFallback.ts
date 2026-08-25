@@ -65,8 +65,8 @@ export class SchemaFallbackManager {
   }
 
   private async _init(): Promise<void> {
-    await this.detectSchema();
     await this.initSqlite();
+    this.detectSchema().catch(() => {});
   }
 
   private async detectSchema(): Promise<void> {
@@ -111,6 +111,8 @@ export class SchemaFallbackManager {
   private async initSqlite(): Promise<void> {
     const db = openDb();
     try {
+
+      
       // local_collections
       await dbRun(db, `CREATE TABLE IF NOT EXISTS local_collections (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -180,6 +182,9 @@ export class SchemaFallbackManager {
       await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_streak_calendar_user ON local_streak_calendar(user_id)`);
 
       this.initialized = true;
+      if (process.env.NODE_ENV !== 'test') {
+        console.log('[SQLite] Schema initialization completed successfully');
+      }
     } finally {
       db.close();
     }

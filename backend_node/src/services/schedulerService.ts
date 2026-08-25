@@ -1,5 +1,5 @@
 import sqlite3 from 'sqlite3';
-import { openDb, dbRun, dbGet, dbAll } from '../utils/schemaFallback';
+import { openDb, dbRun, dbGet, dbAll, fallbackDb } from '../utils/schemaFallback';
 import { supabase } from '../config/supabase';
 import { ReminderService } from './reminderService';
 import { NotificationService } from './notificationService';
@@ -205,6 +205,11 @@ export async function processPendingNotificationQueue(): Promise<void> {
 }
 
 async function startNotificationQueueWorker(): Promise<void> {
+  try {
+    await fallbackDb.ready;
+  } catch (err) {
+    console.error('[Worker] Error waiting for fallbackDb.ready:', err);
+  }
   console.log('[Worker] 🚀 Notification queue worker started');
   await recoverStuckProcessingRecords();
 
@@ -221,6 +226,11 @@ async function startNotificationQueueWorker(): Promise<void> {
  * Background loop that checks reminder times against user settings and schedules notifications.
  */
 export async function startReminderScheduler(): Promise<void> {
+  try {
+    await fallbackDb.ready;
+  } catch (err) {
+    console.error('[Scheduler] Error waiting for fallbackDb.ready:', err);
+  }
   console.log('[Scheduler] 🚀 Reminder scheduler started');
   
   // Start the notification queue worker in parallel
