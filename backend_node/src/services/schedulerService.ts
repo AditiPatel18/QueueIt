@@ -204,7 +204,7 @@ export async function processPendingNotificationQueue(): Promise<void> {
   }
 }
 
-async function startNotificationQueueWorker(): Promise<void> {
+export async function startNotificationQueueWorker(): Promise<void> {
   if (!fallbackDb.initialized) {
     try {
       await fallbackDb.ready;
@@ -214,13 +214,14 @@ async function startNotificationQueueWorker(): Promise<void> {
     }
   }
 
-  const ok = await fallbackDb.verifySchemaTables();
+  const ok = await fallbackDb.verifyRequiredTables();
   if (!ok || !fallbackDb.initialized) {
     console.error('[Worker] Cannot start worker: fallbackDb table verification failed.');
     return;
   }
 
-  console.log('[Worker] 🚀 Notification queue worker started');
+  console.log('[Worker] Notification queue worker started');
+  console.log('[Worker] Recovering stuck processing records...');
   await recoverStuckProcessingRecords();
 
   setInterval(async () => {
@@ -245,21 +246,13 @@ export async function startReminderScheduler(): Promise<void> {
     }
   }
 
-  const ok = await fallbackDb.verifySchemaTables();
+  const ok = await fallbackDb.verifyRequiredTables();
   if (!ok || !fallbackDb.initialized) {
     console.error('[Scheduler] Cannot start reminder scheduler: fallbackDb table verification failed.');
     return;
   }
 
-  console.log('[Scheduler] 🚀 Reminder scheduler started');
-  
-  // Start the notification queue worker in parallel after schema initialization is confirmed
-  startNotificationQueueWorker().catch(err => {
-    console.error('[Scheduler] Notification worker start failed:', err);
-  });
-
-  // Give the app 3 seconds to warm up
-  await new Promise(resolve => setTimeout(resolve, 3000));
+  console.log('[Scheduler] Reminder scheduler started');
 
   setInterval(async () => {
     try {

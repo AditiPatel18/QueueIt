@@ -9,9 +9,19 @@ import https from 'https';
 import http from 'http';
 import { v4 as uuidv4 } from 'uuid';
 
-// DB path mirrors Python: one level up from backend_node/src -> project root
-const projectRoot = path.resolve(__dirname, '../../../');
-export const DB_PATH = path.join(projectRoot, 'local_fallback.db');
+// Deterministic DB path resolution: process.env.DB_PATH, or local_fallback.db relative to process.cwd() or parent
+function resolveDbPath(): string {
+  if (process.env.DB_PATH) {
+    return path.resolve(process.env.DB_PATH);
+  }
+  const cwdDb = path.resolve(process.cwd(), 'local_fallback.db');
+  const parentDb = path.resolve(process.cwd(), '../local_fallback.db');
+  if (fs.existsSync(parentDb) && !fs.existsSync(cwdDb)) {
+    return parentDb;
+  }
+  return cwdDb;
+}
+export const DB_PATH = resolveDbPath();
 
 // ── Promisified SQLite wrappers ─────────────────────────────────────────────
 
@@ -109,7 +119,7 @@ export class SchemaFallbackManager {
   }
 
   private async initSqlite(): Promise<void> {
-    console.log(`[SQLite] DB_PATH: ${DB_PATH}`);
+    console.log(`[SQLite] DB path: ${DB_PATH}`);
     console.log('[SQLite] Initializing schema...');
 
     const db = openDb();
@@ -181,45 +191,72 @@ export class SchemaFallbackManager {
       // Indexes
       await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_reminder_history_user_status ON local_reminder_history(user_id, status, sent_at)`);
       await dbRun(db, `CREATE INDEX IF NOT EXISTS idx_streak_calendar_user ON local_streak_calendar(user_id)`);
-
-      this.initialized = true;
-      console.log('[SQLite] Schema initialization completed successfully');
     } catch (err) {
+      this.initialized = false;
       console.error('[SQLite] Error during schema initialization:', err);
       throw err;
     } finally {
       db.close();
     }
 
-    const verified = await this.verifySchemaTables();
+    const verified = await this.verifyRequiredTables();
     if (!verified) {
       this.initialized = false;
       throw new Error('[SQLite] FATAL: Schema table verification failed after initSqlite!');
     }
+
+    this.initialized = true;
+    console.log('[SQLite] Schema initialization completed successfully');
   }
 
-  async verifySchemaTables(): Promise<boolean> {
+  async verifyRequiredTables(): Promise<boolean> {
+    const requiredTables = [
+      'local_reminder_settings',
+      'local_reminder_history',
+      'local_user_gamification',
+      'local_streak_calendar',
+      'local_item_meta',
+      'local_item_tracking',
+      'local_item_embeddings',
+    ];
+
     const db = openDb();
     try {
-      const historyRow = await dbGet<any>(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='local_reminder_history'");
-      const settingsRow = await dbGet<any>(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='local_reminder_settings'");
+      const placeholders = requiredTables.map(() => '?').join(',');
+      const rows = await dbAll<{ name: string }>(
+        db,
+        `SELECT name FROM sqlite_master WHERE type='table' AND name IN (${placeholders})`,
+        requiredTables
+      );
 
-      const hasHistory = !!historyRow?.name;
-      const hasSettings = !!settingsRow?.name;
+      const foundTables = new Set(rows.map((r) => r.name));
+      const missingTables = requiredTables.filter((tbl) => !foundTables.has(tbl));
 
-      if (hasHistory && hasSettings) {
-        console.log('[SQLite] Verified local_reminder_history exists');
-        return true;
-      } else {
-        console.error(`[SQLite] Schema verification failed: local_reminder_history=${hasHistory}, local_reminder_settings=${hasSettings}`);
+      for (const tbl of requiredTables) {
+        if (foundTables.has(tbl)) {
+          console.log(`[SQLite] ${tbl}: OK`);
+        } else {
+          console.error(`[SQLite] ${tbl}: MISSING`);
+        }
+      }
+
+      if (missingTables.length > 0) {
+        console.error(`[SQLite] Required schema verification FAILED. Missing tables: ${missingTables.join(', ')}`);
         return false;
       }
+
+      console.log('[SQLite] Required schema verification: PASSED');
+      return true;
     } catch (err) {
-      console.error('[SQLite] Error verifying schema tables:', err);
+      console.error('[SQLite] Error verifying required schema tables:', err);
       return false;
     } finally {
       db.close();
     }
+  }
+
+  async verifySchemaTables(): Promise<boolean> {
+    return this.verifyRequiredTables();
   }
 
   // ── Select string ──────────────────────────────────────────────────────────

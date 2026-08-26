@@ -47,18 +47,34 @@ export default function LoginPage() {
     const cleanEmail = email.trim().toLowerCase();
     const supabase = createClient();
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
       password,
     });
 
     if (error) {
-      setError(error.message);
+      console.error("[Supabase Auth Login Error]", error);
+      const msg = error.message.toLowerCase();
+      const code = error.code ? String(error.code).toLowerCase() : "";
+
+      if (msg.includes("confirm") || code === "email_not_confirmed") {
+        setError("Email not confirmed. Please check your email inbox and click the confirmation link before signing in.");
+      } else if (msg.includes("invalid login credentials") || code === "invalid_credentials") {
+        setError("Invalid email or password. Please check your credentials and try again.");
+      } else if (msg.includes("user not found") || code === "user_not_found") {
+        setError("No account found with this email address. Please sign up first.");
+      } else if (msg.includes("rate limit") || code === "over_request_rate_limit") {
+        setError("Too many login attempts. Please wait a few minutes and try again.");
+      } else {
+        setError(error.message);
+      }
       setLoading(false);
       return;
     }
 
-    window.location.href = "/dashboard";
+    if (data?.session) {
+      window.location.href = "/dashboard";
+    }
   };
 
   const handleGoogleLogin = async () => {

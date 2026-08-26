@@ -50,6 +50,7 @@ export default function SignUpPage() {
       email: cleanEmail,
       password,
       options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
         data: {
           full_name: cleanName,
           name: cleanName,
@@ -58,6 +59,7 @@ export default function SignUpPage() {
     });
 
     if (error) {
+      console.error("[Supabase Auth Signup Error]", error);
       setError(error.message);
       setLoading(false);
       return;
@@ -70,11 +72,6 @@ export default function SignUpPage() {
 
     setSuccess(true);
     setLoading(false);
-
-    setTimeout(() => {
-      router.push("/dashboard");
-      router.refresh();
-    }, 1500);
   };
 
   const handleGoogleSignUp = async () => {
@@ -102,15 +99,21 @@ export default function SignUpPage() {
   if (success) {
     return (
       <Card className="glass-strong border-border/30">
-        <CardContent className="pt-8 pb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-500/10">
+        <CardContent className="pt-8 pb-8 text-center space-y-4">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-500/10">
             <CheckCircle className="h-8 w-8 text-green-500" />
           </div>
-          <h2 className="text-xl font-bold mb-2">Account created!</h2>
-          <p className="text-muted-foreground text-sm">
-            Check your email for a confirmation link, or you&apos;ll be
-            redirected shortly.
+          <h2 className="text-xl font-bold">Account created!</h2>
+          <p className="text-muted-foreground text-sm max-w-sm mx-auto">
+            Please check your email and confirm your email address before signing in.
           </p>
+          <div className="pt-2">
+            <Link href="/login">
+              <Button className="gradient-primary text-white border-0 cursor-pointer">
+                Go to Sign In
+              </Button>
+            </Link>
+          </div>
         </CardContent>
       </Card>
     );

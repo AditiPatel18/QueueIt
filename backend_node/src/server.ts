@@ -1,6 +1,6 @@
 import app from './app';
 import { fallbackDb } from './utils/schemaFallback';
-import { startReminderScheduler } from './services/schedulerService';
+import { startReminderScheduler, startNotificationQueueWorker } from './services/schedulerService';
 
 const PORT = Number(process.env.PORT) || 8001;
 
@@ -9,13 +9,18 @@ app.listen(PORT, '0.0.0.0', async () => {
 
   try {
     await fallbackDb.ready;
-    const ok = await fallbackDb.verifySchemaTables();
+    if (!fallbackDb.initialized) {
+      console.error('[Server] FATAL: fallbackDb.initialized is false. Scheduler & worker will not start.');
+      return;
+    }
+    const ok = await fallbackDb.verifyRequiredTables();
     if (!ok) {
-      console.error('[Server] FATAL: SQLite schema verification failed. Reminder scheduler will not start.');
+      console.error('[Server] FATAL: SQLite schema verification failed. Scheduler & worker will not start.');
       return;
     }
     await startReminderScheduler();
+    await startNotificationQueueWorker();
   } catch (err) {
-    console.error('Failed to start reminder scheduler:', err);
+    console.error('[Server] Error during service startup:', err);
   }
 });
