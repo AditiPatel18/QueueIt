@@ -60,7 +60,7 @@ export default function LoginPage() {
       if (msg.includes("confirm") || code === "email_not_confirmed") {
         setError("Email not confirmed. Please check your email inbox and click the confirmation link before signing in.");
       } else if (msg.includes("invalid login credentials") || code === "invalid_credentials") {
-        setError("Invalid email or password. Please check your credentials and try again.");
+        setError("Invalid email or password. If you originally created your account with Google, please use 'Continue with Google' or click 'Forgot password?' to set a password.");
       } else if (msg.includes("user not found") || code === "user_not_found") {
         setError("No account found with this email address. Please sign up first.");
       } else if (msg.includes("rate limit") || code === "over_request_rate_limit") {
@@ -171,9 +171,17 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password" className="text-sm font-medium">
-                Password
-              </Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password" className="text-sm font-medium">
+                  Password
+                </Label>
+                <Link
+                  href="/reset-password"
+                  className="text-xs text-primary hover:text-primary/80 transition-colors font-medium"
+                >
+                  Forgot password?
+                </Link>
+              </div>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input

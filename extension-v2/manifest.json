@@ -9,6 +9,7 @@
     "cookies",
     "http://localhost/*",
     "http://127.0.0.1/*",
+    "https://queueit-one.vercel.app/*",
     "https://*.supabase.co/*",
     "<all_urls>"
   ],

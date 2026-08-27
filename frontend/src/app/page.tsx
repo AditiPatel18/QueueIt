@@ -121,7 +121,7 @@ export default function LandingPage() {
           <nav className="hidden md:flex items-center gap-8 text-xs font-semibold text-muted-foreground">
             <a href="#features" className="hover:text-foreground transition-colors">Features</a>
             <a href="#how-it-works" className="hover:text-foreground transition-colors">Workflow</a>
-            <a href="#extension" className="hover:text-foreground transition-colors">Extension</a>
+            <Link href="/extension" className="hover:text-foreground transition-colors">Extension</Link>
             <a href="#faq" className="hover:text-foreground transition-colors">FAQ</a>
           </nav>
 
@@ -159,7 +159,7 @@ export default function LandingPage() {
             <nav className="flex flex-col gap-3 text-xs font-semibold text-muted-foreground">
               <a href="#features" onClick={() => setMobileMenuOpen(false)} className="hover:text-foreground py-1">Features</a>
               <a href="#how-it-works" onClick={() => setMobileMenuOpen(false)} className="hover:text-foreground py-1">Workflow</a>
-              <a href="#extension" onClick={() => setMobileMenuOpen(false)} className="hover:text-foreground py-1">Extension Guide</a>
+              <Link href="/extension" onClick={() => setMobileMenuOpen(false)} className="hover:text-foreground py-1">Extension Guide</Link>
               <a href="#faq" onClick={() => setMobileMenuOpen(false)} className="hover:text-foreground py-1">FAQ</a>
             </nav>
             <div className="pt-3 border-t border-border/15 flex flex-col gap-2">
@@ -214,7 +214,7 @@ export default function LandingPage() {
                 <ArrowRightIcon className="h-4 w-4" />
               </Button>
             </Link>
-            <a href="#extension">
+            <Link href="/extension">
               <Button
                 size="lg"
                 variant="outline"
@@ -223,7 +223,7 @@ export default function LandingPage() {
                 <Globe className="h-4 w-4 text-primary" />
                 Browser Extension
               </Button>
-            </a>
+            </Link>
           </div>
 
           {/* Micro trust line */}
@@ -478,7 +478,7 @@ export default function LandingPage() {
               </div>
 
               <div className="pt-4">
-                <Link href="/signup">
+                <Link href="/extension">
                   <Button className="gradient-primary text-white border-0 px-6 py-5 text-xs font-bold hover:opacity-95 shadow-md shadow-primary/20 cursor-pointer gap-2">
                     <Globe className="h-4 w-4" /> Install Extension Now
                   </Button>

@@ -139,7 +139,7 @@ input:read-only:focus {
 /* Error */
 .error-box {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   background-color: var(--destructive-bg);
   border: 1px solid var(--destructive);
@@ -151,8 +151,34 @@ input:read-only:focus {
   animation: slideDown 0.2s ease;
 }
 
+.error-text-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.btn-login-link {
+  padding: 6px 10px;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+  transition: opacity 0.2s ease;
+}
+
+.btn-login-link:hover {
+  opacity: 0.9;
+}
+
 .error-icon {
   font-weight: bold;
+  margin-top: 1px;
 }
 
 .hidden {

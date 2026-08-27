@@ -47,7 +47,7 @@ export function Footer() {
             <h4 className="text-xs font-bold uppercase tracking-wider text-foreground/90">Resources</h4>
             <ul className="space-y-1.5 text-xs text-muted-foreground">
               <li>
-                <Link href="/#extension" className="hover:text-foreground transition-colors flex items-center gap-1">
+                <Link href="/extension" className="hover:text-foreground transition-colors flex items-center gap-1">
                   Extension Guide <ArrowUpRight className="h-3 w-3 opacity-60" />
                 </Link>
               </li>

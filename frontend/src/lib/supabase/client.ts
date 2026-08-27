@@ -15,3 +15,4 @@ export function createClient() {
   }
   return supabaseClient;
 }
+

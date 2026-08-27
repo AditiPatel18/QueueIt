@@ -37,10 +37,14 @@ export default function SignUpPage() {
     { label: "Contains uppercase", met: /[A-Z]/.test(password) },
   ];
 
+  const [googleUserExists, setGoogleUserExists] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setGoogleUserExists(false);
 
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = fullName.trim();
@@ -60,7 +64,19 @@ export default function SignUpPage() {
 
     if (error) {
       console.error("[Supabase Auth Signup Error]", error);
-      setError(error.message);
+      const msg = error.message.toLowerCase();
+      if (msg.includes("already registered") || msg.includes("already exists")) {
+        setError("An account with this email already exists. Try signing in with Google or reset your password to configure password login.");
+      } else {
+        setError(error.message);
+      }
+      setLoading(false);
+      return;
+    }
+
+    // Supabase returns identities: [] if the user already exists via Google OAuth
+    if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      setGoogleUserExists(true);
       setLoading(false);
       return;
     }
@@ -71,6 +87,26 @@ export default function SignUpPage() {
     }
 
     setSuccess(true);
+    setLoading(false);
+  };
+
+  const handleSendSetupLink = async () => {
+    setLoading(true);
+    setError(null);
+    const cleanEmail = email.trim().toLowerCase();
+    const supabase = createClient();
+
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: `${window.location.origin}/auth/callback?next=/update-password`,
+    });
+
+    if (error) {
+      setError(error.message);
+      setLoading(false);
+      return;
+    }
+
+    setResetSent(true);
     setLoading(false);
   };
 
@@ -95,6 +131,50 @@ export default function SignUpPage() {
       setGoogleLoading(false);
     }
   };
+
+  if (googleUserExists) {
+    return (
+      <Card className="glass-strong border-border/30">
+        <CardContent className="pt-8 pb-8 text-center space-y-4">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-blue-500/10">
+            <User className="h-8 w-8 text-blue-500" />
+          </div>
+          <h2 className="text-xl font-bold">Account Exists via Google</h2>
+          <p className="text-muted-foreground text-sm max-w-sm mx-auto">
+            An account for <strong className="text-foreground">{email}</strong> was created using Google Sign-In. You can sign in with Google directly, or send a password setup link to enable password login.
+          </p>
+
+          {resetSent ? (
+            <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3 text-sm text-green-400">
+              Password setup link sent to {email}! Check your inbox.
+            </div>
+          ) : null}
+
+          <div className="pt-2 space-y-2">
+            <Button
+              className="w-full py-5 border-border/50 hover:bg-accent/50 transition-all cursor-pointer"
+              variant="outline"
+              onClick={handleGoogleSignUp}
+              disabled={googleLoading}
+            >
+              {googleLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Continue with Google
+            </Button>
+            {!resetSent ? (
+              <Button
+                className="w-full py-5 gradient-primary text-white border-0 cursor-pointer"
+                onClick={handleSendSetupLink}
+                disabled={loading}
+              >
+                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Send Password Setup Link
+              </Button>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (success) {
     return (
