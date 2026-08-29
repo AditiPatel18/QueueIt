@@ -285,12 +285,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 data = await response.json();
             } catch (e) {}
 
+            console.log(`[QueueIt Save] HTTP ${response.status}`, data ? { status: response.status, detail: data.detail || data.error } : "No JSON body");
+
             if (!response.ok) {
-                let errMessage = "Failed to save content";
+                let errMessage = `Server error (${response.status})`;
                 if (data) {
-                    errMessage = data.detail || data.error || errMessage;
+                    errMessage = data.detail || data.error || data.message || errMessage;
                 }
-                throw new Error(errMessage);
+                const isAuthErr = response.status === 401 || errMessage.toLowerCase().includes("log in") || errMessage.toLowerCase().includes("unauthorized");
+                showError(isAuthErr ? "Please log in to QueueIt first" : errMessage, isAuthErr);
+                return;
             }
 
             const isDuplicate = response.headers.get("X-QueueIt-Duplicate") === "true" || (data && data.is_duplicate);
