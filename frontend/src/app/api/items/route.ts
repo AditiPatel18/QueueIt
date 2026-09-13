@@ -132,11 +132,44 @@ export async function POST(request: Request) {
     }
 
     const cleanUrl = rawUrl.trim();
-    const sourceType = resolvePlatformType(cleanUrl);
-    const sourceName = resolveSourceName(cleanUrl);
     const itemTitle = body.title?.trim() || cleanUrl;
 
-    // 2. Database client: use service-role key if present on the server, otherwise fallback to user-scoped client with Bearer token
+    // 2. Try proxying to backend service first if configured
+    const backendBase = (process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_URL || "").replace(/[-/]+$/, "");
+    if (backendBase && !backendBase.includes("localhost:3000")) {
+      try {
+        const backendRes = await fetch(`${backendBase}/api/items`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            url: cleanUrl,
+            title: itemTitle,
+          }),
+        });
+
+        if (backendRes.ok) {
+          const backendData = await backendRes.json();
+          const isDup = backendRes.headers.get("X-QueueIt-Duplicate") === "true" || (backendData && backendData.is_duplicate);
+          return NextResponse.json(backendData, {
+            status: backendRes.status,
+            headers: {
+              ...corsHeaders,
+              ...(isDup ? { "X-QueueIt-Duplicate": "true" } : {}),
+            },
+          });
+        }
+      } catch (proxyErr) {
+        console.warn("[API /items] Backend proxy attempt failed, falling back to direct DB insert:", proxyErr);
+      }
+    }
+
+    const sourceType = resolvePlatformType(cleanUrl);
+    const sourceName = resolveSourceName(cleanUrl);
+
+    // 3. Database client: use service-role key if present on the server, otherwise fallback to user-scoped client with Bearer token
     const dbClient = supabaseServiceKey
       ? createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } })
       : createClient(supabaseUrl, supabaseAnonKey, {
