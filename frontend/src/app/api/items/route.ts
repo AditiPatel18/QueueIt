@@ -135,10 +135,23 @@ export async function POST(request: Request) {
     const itemTitle = body.title?.trim() || cleanUrl;
 
     // 2. Try proxying to backend service first (Render or configured backend)
-    const rawBackendUrl = process.env.BACKEND_API_URL || process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
-    const backendBase = rawBackendUrl.replace(/[-/]+$/, "");
+    const candidates = [
+      process.env.BACKEND_API_URL,
+      process.env.BACKEND_URL,
+      process.env.NEXT_PUBLIC_API_URL,
+      "https://queueit-backend-v62p.onrender.com",
+      "http://localhost:8001",
+    ].filter(Boolean) as string[];
 
-    if (backendBase && !backendBase.includes("localhost:3000")) {
+    for (const rawUrl of candidates) {
+      const backendBase = rawUrl.replace(/[-/]+$/, "");
+      if (!backendBase || backendBase.includes("localhost:3000")) continue;
+
+      // Skip localhost when running in production serverless environments unless specifically configured
+      if (process.env.NODE_ENV === "production" && (backendBase.includes("localhost") || backendBase.includes("127.0.0.1"))) {
+        continue;
+      }
+
       try {
         console.log(`[API /items] Proxying save request for user ${targetUserId} to backend at: ${backendBase}`);
         const backendRes = await fetch(`${backendBase}/api/items`, {
@@ -166,7 +179,7 @@ export async function POST(request: Request) {
           });
         } else {
           const errText = await backendRes.text().catch(() => "");
-          console.warn(`[API /items] Backend responded with status ${backendRes.status}:`, errText);
+          console.warn(`[API /items] Backend (${backendBase}) responded with status ${backendRes.status}:`, errText);
         }
       } catch (proxyErr: any) {
         console.warn(`[API /items] Backend proxy connection failed (${backendBase}):`, proxyErr?.message || proxyErr);
