@@ -621,17 +621,17 @@ export const QueueItemCard = memo(function QueueItemCard({
 
                 {/* AI Summary Block */}
                 {(item.processing_status === "queued" || item.processing_status === "processing") ? (
-                  <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-purple-500/5 rounded-lg p-2 border border-purple-500/5 animate-pulse">
+                  <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-purple-500/5 rounded-lg p-2 border border-purple-500/10 animate-pulse">
                     <Loader2 className="h-4 w-4 text-purple-400 animate-spin shrink-0" />
                     <p className="leading-relaxed font-semibold text-purple-400">
-                      {item.processing_status === "queued" ? "Queued for AI summary..." : "Generating AI summary..."}
+                      Generating summary...
                     </p>
                   </div>
                 ) : (item.processing_status === "pending_quota" || item.processing_status === "ai_pending") ? (
                   <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-amber-500/5 rounded-lg p-2 border border-amber-500/10">
                     <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
                     <p className="leading-relaxed font-semibold text-amber-600 dark:text-amber-400">
-                      AI summary pending (free tier limit reached). It will be generated automatically after quota reset.
+                      Summary generation queued. It will be generated automatically shortly.
                     </p>
                   </div>
                 ) : (item.processing_status === "failed") ? (
@@ -639,7 +639,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                     <div className="flex gap-2 items-center">
                       <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
                       <p className="leading-relaxed font-semibold text-red-600 dark:text-red-400">
-                        AI Summary generation failed.
+                        Summary unavailable
                       </p>
                     </div>
                     <Button 
@@ -921,11 +921,11 @@ export const QueueItemCard = memo(function QueueItemCard({
                     <select
                       value={item.collection_id || ""}
                       onChange={(e) => handleMoveCollection(e.target.value || null)}
-                      className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border bg-secondary/15 text-muted-foreground border-border/10 cursor-pointer outline-none w-full"
+                      className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border bg-card text-foreground border-border/30 hover:border-primary/40 focus:border-primary focus:ring-1 focus:ring-primary/40 cursor-pointer outline-none w-full transition-all"
                     >
-                      <option value="">Uncategorized / No folder</option>
+                      <option value="" className="bg-card text-foreground">Uncategorized / No folder</option>
                       {collections.map((col) => (
-                        <option key={col.id} value={col.id}>
+                        <option key={col.id} value={col.id} className="bg-card text-foreground">
                           {col.name}
                         </option>
                       ))}
@@ -939,8 +939,8 @@ export const QueueItemCard = memo(function QueueItemCard({
                     <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
                     </h4>
-                    <p className="text-xs text-purple-400 font-semibold leading-relaxed bg-purple-500/5 rounded p-2.5 border border-purple-500/5">
-                      {item.processing_status === "queued" ? "Queued for AI summary..." : "Generating AI summary..."}
+                    <p className="text-xs text-purple-400 font-semibold leading-relaxed bg-purple-500/5 rounded p-2.5 border border-purple-500/10">
+                      Generating summary...
                     </p>
                   </div>
                 ) : (item.processing_status === "pending_quota" || item.processing_status === "ai_pending") ? (
@@ -949,7 +949,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
                     </h4>
                     <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold leading-relaxed bg-amber-500/5 rounded p-2.5 border border-amber-500/10">
-                      AI summary generation pending (daily quota exceeded). It will be retried automatically when the quota resets.
+                      Summary generation queued. It will be generated automatically shortly.
                     </p>
                   </div>
                 ) : (item.processing_status === "failed") ? (
@@ -958,7 +958,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
                     </h4>
                     <p className="text-xs text-red-600 dark:text-red-400 font-semibold leading-relaxed bg-red-500/5 rounded p-2.5 border border-red-500/10">
-                      AI summary generation failed. You can retry manually.
+                      Summary unavailable
                     </p>
                   </div>
                 ) : (item.full_summary || item.ai_summary) ? (

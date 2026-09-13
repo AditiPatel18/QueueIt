@@ -612,10 +612,10 @@ export function QueueList({
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
-            className="text-xs px-3 py-1.5 rounded-full border bg-secondary/30 text-muted-foreground border-border/20 cursor-pointer hover:border-border/40 transition-all outline-none"
+            className="text-xs font-semibold px-3 py-1.5 rounded-full border bg-card text-foreground border-border/40 hover:border-primary/40 focus:border-primary focus:ring-1 focus:ring-primary/40 transition-all outline-none cursor-pointer shadow-sm"
           >
             {TYPE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
+              <option key={opt.value} value={opt.value} className="bg-card text-foreground">
                 {opt.label}
               </option>
             ))}
@@ -625,10 +625,10 @@ export function QueueList({
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as SortOption)}
-            className="text-xs px-3 py-1.5 rounded-full border bg-secondary/30 text-muted-foreground border-border/20 cursor-pointer hover:border-border/40 transition-all outline-none"
+            className="text-xs font-semibold px-3 py-1.5 rounded-full border bg-card text-foreground border-border/40 hover:border-primary/40 focus:border-primary focus:ring-1 focus:ring-primary/40 transition-all outline-none cursor-pointer shadow-sm"
           >
             {SORT_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
+              <option key={opt.value} value={opt.value} className="bg-card text-foreground">
                 Sort: {opt.label}
               </option>
             ))}

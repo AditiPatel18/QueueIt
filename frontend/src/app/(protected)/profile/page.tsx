@@ -27,6 +27,11 @@ import {
   UserCheck,
   CheckCircle2,
   Camera,
+  Lock,
+  KeyRound,
+  Eye,
+  EyeOff,
+  ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAnalytics, ANALYTICS_CACHE_KEY } from "@/hooks/use-swr-queries";
@@ -34,6 +39,7 @@ import { mutate } from "swr";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const ICON_MAP = {
   Inbox: Inbox,
@@ -59,6 +65,17 @@ export default function ProfilePage() {
   const [displayName, setDisplayName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [readingGoal, setReadingGoal] = useState("15");
+
+  // Password Change Form States
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [updatingPassword, setUpdatingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
 
   const { analytics, isLoading: analyticsLoading, error: analyticsError } = useAnalytics();
 
@@ -91,6 +108,71 @@ export default function ProfilePage() {
       toast.error("Failed to update profile", { description: err.message });
     } finally {
       setUpdatingProfile(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !user.email) return;
+
+    setPasswordError(null);
+    setPasswordSuccess(null);
+
+    if (!currentPassword.trim()) {
+      setPasswordError("Current password is required.");
+      return;
+    }
+    if (!newPassword) {
+      setPasswordError("New password is required.");
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPasswordError("New password must be at least 6 characters long.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("New password and confirmation password do not match.");
+      return;
+    }
+
+    setUpdatingPassword(true);
+    try {
+      const supabase = createClient();
+      // 1. Verify current password
+      const { error: verifyError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: currentPassword,
+      });
+
+      if (verifyError) {
+        setPasswordError("Incorrect current password. Please check and try again.");
+        toast.error("Incorrect current password.");
+        setUpdatingPassword(false);
+        return;
+      }
+
+      // 2. Update to new password
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updateError) {
+        setPasswordError(updateError.message || "Failed to update password.");
+        toast.error(updateError.message || "Failed to update password.");
+        setUpdatingPassword(false);
+        return;
+      }
+
+      toast.success("Password changed successfully!");
+      setPasswordSuccess("Your password has been changed successfully.");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (err: any) {
+      setPasswordError("An unexpected error occurred while updating your password.");
+      toast.error("Failed to update password.");
+    } finally {
+      setUpdatingPassword(false);
     }
   };
 
@@ -283,7 +365,7 @@ export default function ProfilePage() {
                         </div>
                       </div>
 
-                      <div className="space-y-1.5">
+                      <div className="space-y-2">
                         <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Avatar Image URL</label>
                         <div className="relative">
                           <Camera className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -294,6 +376,39 @@ export default function ProfilePage() {
                             placeholder="https://example.com/avatar.jpg"
                             className="pl-9 glass border-border/20 font-mono text-xs"
                           />
+                        </div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <span className="text-[10px] text-muted-foreground font-semibold">Quick Presets:</span>
+                          <button
+                            type="button"
+                            onClick={() => setAvatarUrl("https://api.dicebear.com/7.x/bottts/svg?seed=" + encodeURIComponent(user.email || "QueueIt"))}
+                            className="text-[10px] bg-secondary/50 hover:bg-secondary border border-border/30 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                          >
+                            Robot
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAvatarUrl("https://api.dicebear.com/7.x/identicon/svg?seed=" + encodeURIComponent(user.email || "QueueIt"))}
+                            className="text-[10px] bg-secondary/50 hover:bg-secondary border border-border/30 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                          >
+                            Identicon
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAvatarUrl("https://api.dicebear.com/7.x/avataaars/svg?seed=" + encodeURIComponent(user.email || "QueueIt"))}
+                            className="text-[10px] bg-secondary/50 hover:bg-secondary border border-border/30 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                          >
+                            Avatar
+                          </button>
+                          {avatarUrl && (
+                            <button
+                              type="button"
+                              onClick={() => setAvatarUrl("")}
+                              className="text-[10px] text-destructive hover:underline ml-auto font-semibold cursor-pointer"
+                            >
+                              Clear Avatar
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -312,6 +427,131 @@ export default function ProfilePage() {
                         )}
                       </Button>
                     </form>
+                  </CardContent>
+                </Card>
+
+                {/* Change Password Card */}
+                <Card className="glass border-border/20 shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="text-lg font-bold flex items-center gap-2 text-foreground">
+                      <KeyRound className="h-5 w-5 text-primary" /> Change Password
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Update your account password securely.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {(user.app_metadata?.provider === "google" && !user.identities?.some((id: any) => id.provider === "email")) ? (
+                      <div className="rounded-xl border border-border/20 bg-secondary/20 p-4 text-xs space-y-2">
+                        <div className="flex items-center gap-2 text-foreground font-semibold">
+                          <ShieldCheck className="h-4 w-4 text-primary" />
+                          <span>Google Sign-In Account</span>
+                        </div>
+                        <p className="text-muted-foreground leading-relaxed">
+                          Your account is authenticated and managed via Google OAuth. Password changes are not applicable for Google-only login.
+                        </p>
+                      </div>
+                    ) : (
+                      <form onSubmit={handleChangePassword} className="space-y-4 max-w-lg">
+                        {passwordError && (
+                          <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3 text-xs text-destructive">
+                            {passwordError}
+                          </div>
+                        )}
+                        {passwordSuccess && (
+                          <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3 text-xs text-emerald-500">
+                            {passwordSuccess}
+                          </div>
+                        )}
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                            Current Password
+                          </label>
+                          <div className="relative">
+                            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                            <Input
+                              type={showCurrentPassword ? "text" : "password"}
+                              value={currentPassword}
+                              onChange={(e) => setCurrentPassword(e.target.value)}
+                              placeholder="••••••••"
+                              className="pl-9 pr-10 glass border-border/20"
+                              required
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                            >
+                              {showCurrentPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                            New Password
+                          </label>
+                          <div className="relative">
+                            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                            <Input
+                              type={showNewPassword ? "text" : "password"}
+                              value={newPassword}
+                              onChange={(e) => setNewPassword(e.target.value)}
+                              placeholder="•••••••• (min. 6 characters)"
+                              className="pl-9 pr-10 glass border-border/20"
+                              required
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowNewPassword(!showNewPassword)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                            >
+                              {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                            Confirm New Password
+                          </label>
+                          <div className="relative">
+                            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                            <Input
+                              type={showConfirmPassword ? "text" : "password"}
+                              value={confirmPassword}
+                              onChange={(e) => setConfirmPassword(e.target.value)}
+                              placeholder="••••••••"
+                              className="pl-9 pr-10 glass border-border/20"
+                              required
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                            >
+                              {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <Button
+                          type="submit"
+                          disabled={updatingPassword}
+                          className="gradient-primary text-white border-0 hover:opacity-90 cursor-pointer font-semibold text-xs py-2 px-4 rounded-lg mt-2 transition-all"
+                        >
+                          {updatingPassword ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              Updating Password...
+                            </>
+                          ) : (
+                            "Update Password"
+                          )}
+                        </Button>
+                      </form>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -562,28 +802,31 @@ export default function ProfilePage() {
                       <select
                         value={readingGoal}
                         onChange={(e) => setReadingGoal(e.target.value)}
-                        className="w-full text-sm px-3.5 py-2.5 rounded-lg border bg-secondary/30 text-muted-foreground border-border/20 cursor-pointer hover:border-border/40 transition-all outline-none"
+                        className="w-full text-sm px-3.5 py-2.5 rounded-lg border bg-card text-foreground border-border/30 hover:border-primary/40 focus:border-primary focus:ring-1 focus:ring-primary/40 cursor-pointer transition-all outline-none"
                       >
-                        <option value="5">5 minutes / day</option>
-                        <option value="10">10 minutes / day</option>
-                        <option value="15">15 minutes / day</option>
-                        <option value="30">30 minutes / day</option>
-                        <option value="45">45 minutes / day</option>
-                        <option value="60">60 minutes / day</option>
+                        <option value="5" className="bg-card text-foreground">5 minutes / day</option>
+                        <option value="10" className="bg-card text-foreground">10 minutes / day</option>
+                        <option value="15" className="bg-card text-foreground">15 minutes / day</option>
+                        <option value="30" className="bg-card text-foreground">30 minutes / day</option>
+                        <option value="45" className="bg-card text-foreground">45 minutes / day</option>
+                        <option value="60" className="bg-card text-foreground">60 minutes / day</option>
                       </select>
                     </div>
 
-                    <div className="border-t border-border/10 pt-4 space-y-1">
-                      <h4 className="text-xs font-bold text-foreground">Appearance / Theme</h4>
+                    <div className="border-t border-border/10 pt-4 space-y-2">
+                      <h4 className="text-xs font-bold text-foreground uppercase tracking-wider">Appearance / Theme</h4>
                       <p className="text-xs text-muted-foreground leading-relaxed">
-                        QueueIt is built with a custom default dark glassmorphic styling system to provide a premium, modern environment for reading. Light mode settings are currently unavailable.
+                        Customize QueueIt's visual appearance. Choose between dark mode, clean light mode, or match your system preferences.
                       </p>
+                      <div className="pt-1">
+                        <ThemeToggle variant="buttons" />
+                      </div>
                     </div>
 
                     <Button
                       type="submit"
                       disabled={updatingGoal}
-                      className="gradient-primary text-white border-0 hover:opacity-90 cursor-pointer font-semibold text-xs py-2 px-4 rounded-lg transition-all"
+                      className="gradient-primary text-white border-0 hover:opacity-90 cursor-pointer font-semibold text-xs py-2 px-4 rounded-lg transition-all mt-4"
                     >
                       {updatingGoal ? (
                         <>

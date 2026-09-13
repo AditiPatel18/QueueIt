@@ -18,8 +18,19 @@ async function zipFolder(dir: string, zip: JSZip, zipRoot = "") {
   }
 }
 
+import { createClient } from "@/lib/supabase/server";
+
 export async function GET() {
   try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) {
+      return new NextResponse("Unauthorized. Please log in or sign up to download the QueueIt Extension.", {
+        status: 401,
+      });
+    }
+
     const extensionZipPath = path.join(process.cwd(), "public", "extension", "queueit-extension.zip");
     const publicZipPath = path.join(process.cwd(), "public", "queueit-extension.zip");
     let zipBuffer: Buffer;

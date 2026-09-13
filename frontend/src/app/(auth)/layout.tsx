@@ -1,6 +1,6 @@
-import { LayersIcon } from "lucide-react";
 import Link from "next/link";
 import { Footer } from "@/components/footer";
+import { QueueItLogo } from "@/components/logo";
 
 export default function AuthLayout({
   children,
@@ -18,15 +18,9 @@ export default function AuthLayout({
       <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 py-12">
         <div className="w-full max-w-md">
           {/* Logo */}
-          <Link
-            href="/"
-            className="mb-8 flex items-center justify-center gap-2.5 transition-opacity hover:opacity-80 group"
-          >
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl gradient-primary shadow-md shadow-primary/20 transition-transform group-hover:scale-105">
-              <LayersIcon className="h-5 w-5 text-white" />
-            </div>
-            <span className="text-2xl font-extrabold tracking-tight gradient-text">QueueIt</span>
-          </Link>
+          <div className="mb-8 flex justify-center">
+            <QueueItLogo size="lg" href="/" />
+          </div>
 
           {children}
         </div>

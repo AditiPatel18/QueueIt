@@ -89,7 +89,7 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
         } = await supabase.auth.getSession();
         if (!session?.access_token) return;
 
-        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "");
         const response = await fetch(`${API_URL}/api/items/suggest-collection`, {
           method: "POST",
           headers: {
@@ -152,7 +152,7 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
         }
       }
 
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "");
       const requestUrl = `${API_URL}/api/items`;
 
       console.log("[AddItem] POST", requestUrl, requestBody);

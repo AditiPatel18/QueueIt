@@ -27,6 +27,7 @@ import {
   Menu,
   X,
   Loader2,
+  Puzzle,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
@@ -45,6 +46,9 @@ interface NavbarProps {
   onItemAdded?: () => void;
 }
 
+import { QueueItLogo } from "@/components/logo";
+import { ThemeToggle } from "@/components/theme-toggle";
+
 export function Navbar({ onItemAdded }: NavbarProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -57,6 +61,7 @@ export function Navbar({ onItemAdded }: NavbarProps) {
     { href: "/analytics", label: "Analytics", icon: BarChart3 },
     { href: "/history", label: "History", icon: History },
     { href: "/chat", label: "AI Assistant", icon: Sparkles },
+    { href: "/extension", label: "Extension", icon: Puzzle },
   ];
 
   const handleLogout = async () => {
@@ -85,14 +90,7 @@ export function Navbar({ onItemAdded }: NavbarProps) {
     <header className="sticky top-0 z-40 w-full border-b border-border/30 glass">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5 relative">
         {/* Left: Brand Logo */}
-        <Link href="/dashboard" className="flex items-center gap-2.5 group shrink-0">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl gradient-primary shadow-md shadow-primary/20 transition-transform group-hover:scale-105">
-            <LayersIcon className="h-5 w-5 text-white" />
-          </div>
-          <span className="text-xl font-extrabold tracking-tight gradient-text">
-            QueueIt
-          </span>
-        </Link>
+        <QueueItLogo href="/dashboard" />
 
         {/* Center: Desktop Nav Links */}
         <nav className="hidden md:flex items-center justify-center gap-2 md:absolute md:left-1/2 md:-translate-x-1/2">
@@ -118,8 +116,8 @@ export function Navbar({ onItemAdded }: NavbarProps) {
           })}
         </nav>
 
-        {/* Right: Add Item CTA, Reminders, User Profile */}
-        <div className="hidden md:flex items-center gap-3 shrink-0">
+        {/* Right: Add Item CTA, Reminders, Theme Toggle, User Profile */}
+        <div className="hidden md:flex items-center gap-2.5 shrink-0">
           <AddItemDialog
             trigger={
               <Button
@@ -134,6 +132,7 @@ export function Navbar({ onItemAdded }: NavbarProps) {
           />
 
           <RemindersPopover />
+          <ThemeToggle />
 
           {/* User Menu Dropdown */}
           {user && (
@@ -168,6 +167,12 @@ export function Navbar({ onItemAdded }: NavbarProps) {
                     <span>Analytics</span>
                   </DropdownMenuItem>
                 </Link>
+                <Link href="/extension">
+                  <DropdownMenuItem className="flex items-center gap-2 cursor-pointer text-xs font-medium">
+                    <Puzzle className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span>Browser Extension</span>
+                  </DropdownMenuItem>
+                </Link>
                 <DropdownMenuSeparator className="bg-border/20" />
                 <DropdownMenuItem
                   onClick={handleLogout}
@@ -189,6 +194,7 @@ export function Navbar({ onItemAdded }: NavbarProps) {
         {/* Mobile Navigation Controls */}
         <div className="flex md:hidden items-center gap-2">
           <RemindersPopover />
+          <ThemeToggle />
           <Button
             variant="ghost"
             size="icon"
@@ -235,6 +241,11 @@ export function Navbar({ onItemAdded }: NavbarProps) {
               }
               onItemAdded={() => { onItemAdded?.(); setMobileMenuOpen(false); }}
             />
+
+            <div className="py-1">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block mb-1.5">Theme</span>
+              <ThemeToggle variant="buttons" />
+            </div>
 
             <Link href="/profile" onClick={() => setMobileMenuOpen(false)}>
               <Button variant="outline" size="sm" className="w-full justify-start h-9 text-xs glass border-border/30 gap-2">

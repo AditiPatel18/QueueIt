@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Footer } from "@/components/footer";
+import { QueueItLogo } from "@/components/logo";
 import {
   Bookmark,
   LayersIcon,
@@ -108,14 +109,7 @@ export default function LandingPage() {
       {/* Top Header Navigation */}
       <header className="sticky top-0 z-50 w-full border-b border-border/30 glass">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <Link href="/" className="flex items-center gap-2.5 group">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl gradient-primary shadow-md shadow-primary/25 transition-transform group-hover:scale-105">
-              <LayersIcon className="h-5 w-5 text-white" />
-            </div>
-            <span className="text-xl font-extrabold tracking-tight gradient-text">
-              QueueIt
-            </span>
-          </Link>
+          <QueueItLogo href="/" />
 
           {/* Nav Links */}
           <nav className="hidden md:flex items-center gap-8 text-xs font-semibold text-muted-foreground">

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { LayersIcon, GitBranch, Globe, Mail, ShieldCheck, FileText, ArrowUpRight } from "lucide-react";
 
+import { QueueItLogo } from "@/components/logo";
+
 export function Footer() {
   return (
     <footer className="relative z-10 border-t border-border/30 bg-card/40 backdrop-blur-lg mt-auto">
@@ -10,14 +12,7 @@ export function Footer() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-8 pb-10 border-b border-border/20">
           {/* Brand Column */}
           <div className="md:col-span-2 space-y-3">
-            <Link href="/" className="flex items-center gap-2.5 group">
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl gradient-primary shadow-md shadow-primary/20 transition-transform group-hover:scale-105">
-                <LayersIcon className="h-4 w-4 text-white" />
-              </div>
-              <span className="text-lg font-extrabold tracking-tight gradient-text">
-                QueueIt
-              </span>
-            </Link>
+            <QueueItLogo size="sm" href="/" />
             <p className="text-xs text-muted-foreground/80 leading-relaxed max-w-sm">
               Your universal intelligent queue for articles, videos, podcasts, and web pages. Save from anywhere, enrich with AI, and consume at your pace.
             </p>

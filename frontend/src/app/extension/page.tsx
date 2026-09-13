@@ -1,8 +1,13 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
+import { QueueItLogo } from "@/components/logo";
+import { useAuth } from "@/components/auth-provider";
 import {
   LayersIcon,
   Download,
@@ -89,6 +94,35 @@ const STEPS = [
 ];
 
 export default function ExtensionSetupPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+
+  const handleDownload = (e?: React.MouseEvent) => {
+    if (e) e.preventDefault();
+    if (!user) {
+      const nextUrl = encodeURIComponent("/extension?download=true");
+      router.push(`/login?next=${nextUrl}`);
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = "/api/extension/download";
+    link.download = "queueit-extension.zip";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && user) {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("download") === "true") {
+        handleDownload();
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, "", newUrl);
+      }
+    }
+  }, [user]);
+
   return (
     <div className="relative min-h-screen bg-background text-foreground overflow-hidden font-sans flex flex-col">
       {/* Background ambient lighting effects */}
@@ -110,27 +144,30 @@ export default function ExtensionSetupPage() {
       {/* Top Navigation */}
       <header className="sticky top-0 z-50 w-full border-b border-border/30 glass">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <Link href="/" className="flex items-center gap-2.5 group">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl gradient-primary shadow-md shadow-primary/25 transition-transform group-hover:scale-105">
-              <LayersIcon className="h-5 w-5 text-white" />
-            </div>
-            <span className="text-xl font-extrabold tracking-tight gradient-text">
-              QueueIt
-            </span>
-          </Link>
+          <QueueItLogo href={user ? "/dashboard" : "/"} />
 
           <div className="flex items-center gap-3">
-            <Link href="/">
-              <Button variant="ghost" size="sm" className="text-xs font-semibold hover:text-foreground cursor-pointer">
-                Home
-              </Button>
-            </Link>
-            <Link href="/dashboard">
-              <Button size="sm" variant="outline" className="glass border-border/30 text-xs font-semibold cursor-pointer gap-1.5 h-9">
-                <LayoutDashboard className="h-3.5 w-3.5" />
-                Dashboard
-              </Button>
-            </Link>
+            {user ? (
+              <Link href="/dashboard">
+                <Button size="sm" variant="outline" className="glass border-border/30 text-xs font-semibold cursor-pointer gap-1.5 h-9">
+                  <LayoutDashboard className="h-3.5 w-3.5" />
+                  Dashboard
+                </Button>
+              </Link>
+            ) : (
+              <>
+                <Link href="/login">
+                  <Button variant="ghost" size="sm" className="text-xs font-semibold hover:text-foreground cursor-pointer">
+                    Sign in
+                  </Button>
+                </Link>
+                <Link href="/signup">
+                  <Button size="sm" className="gradient-primary text-white text-xs font-bold shadow-md cursor-pointer h-9 px-4">
+                    Create account
+                  </Button>
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -138,7 +175,7 @@ export default function ExtensionSetupPage() {
       {/* Main Content */}
       <main className="relative z-10 flex-1">
         {/* Hero Section */}
-        <section className="mx-auto max-w-5xl px-6 pt-12 pb-12 text-center flex flex-col items-center">
+        <section className="mx-auto max-w-5xl px-6 pt-12 pb-8 text-center flex flex-col items-center">
           <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-4 py-1.5 text-xs font-medium text-primary shadow-xs">
             <Globe className="h-3.5 w-3.5" />
             <span>Browser Extension Setup Guide</span>
@@ -152,35 +189,84 @@ export default function ExtensionSetupPage() {
             Save articles, YouTube videos, and web pages directly to your queue with a single click — anywhere on the web.
           </p>
 
-          {/* Download CTA Button */}
+          {/* Download CTA Buttons */}
           <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
-            <a href="/extension/queueit-extension.zip" download="queueit-extension.zip">
-              <Button
-                size="lg"
-                className="gradient-primary text-white border-0 px-8 py-6 text-sm font-bold hover:opacity-95 transition-all shadow-xl shadow-primary/25 glow-primary cursor-pointer gap-2.5"
-              >
-                <Download className="h-5 w-5" />
-                Download QueueIt Extension (ZIP)
-              </Button>
-            </a>
+            <Button
+              size="lg"
+              onClick={handleDownload}
+              className="gradient-primary text-white border-0 px-8 py-6 text-sm font-bold hover:opacity-95 transition-all shadow-xl shadow-primary/25 glow-primary cursor-pointer gap-2.5"
+            >
+              <Download className="h-5 w-5" />
+              Download QueueIt Extension (ZIP)
+            </Button>
+            {!user ? (
+              <Link href={"/signup?next=" + encodeURIComponent("/extension?download=true")}>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="glass-strong border-border/40 text-sm font-bold hover:bg-secondary/60 transition-all cursor-pointer px-6 py-6"
+                >
+                  Create Free Account
+                </Button>
+              </Link>
+            ) : null}
           </div>
 
-          <p className="mt-3 text-xs text-muted-foreground/70 flex items-center justify-center gap-2">
+          <p className="mt-4 text-xs text-muted-foreground/70 flex items-center justify-center gap-2">
             <span>✓ Compatible with Chrome, Brave, Edge & Opera</span>
             <span>·</span>
-            <span>✓ Manifest V3</span>
+            <span>✓ Developer Mode (Load Unpacked)</span>
           </p>
         </section>
 
-        {/* Installation Steps Section */}
+        {/* Visual Workflow Demo Card */}
+        <section className="mx-auto max-w-5xl px-6 pb-12">
+          <div className="glass rounded-3xl p-6 border border-white/10 shadow-xl space-y-4">
+            <h3 className="text-xs font-bold text-center uppercase tracking-wider text-primary">
+              How it works — 5-Second Workflow
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 text-center">
+              <div className="glass-strong rounded-xl p-3 border border-white/10 flex flex-col items-center gap-1.5">
+                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">1</span>
+                <span className="text-xs font-bold">Install ZIP</span>
+                <span className="text-[10px] text-muted-foreground">Load unpacked in Chrome</span>
+              </div>
+              <div className="glass-strong rounded-xl p-3 border border-white/10 flex flex-col items-center gap-1.5">
+                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">2</span>
+                <span className="text-xs font-bold">Pin QueueIt</span>
+                <span className="text-[10px] text-muted-foreground">Pin to browser toolbar</span>
+              </div>
+              <div className="glass-strong rounded-xl p-3 border border-white/10 flex flex-col items-center gap-1.5">
+                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">3</span>
+                <span className="text-xs font-bold">Open Webpage</span>
+                <span className="text-[10px] text-muted-foreground">Any article or YouTube video</span>
+              </div>
+              <div className="glass-strong rounded-xl p-3 border border-white/10 flex flex-col items-center gap-1.5">
+                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">4</span>
+                <span className="text-xs font-bold">Click QueueIt</span>
+                <span className="text-[10px] text-muted-foreground">Open popup & click Save</span>
+              </div>
+              <div className="glass-strong rounded-xl p-3 border border-white/10 flex flex-col items-center gap-1.5">
+                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">5</span>
+                <span className="text-xs font-bold">Read & Summarize</span>
+                <span className="text-[10px] text-muted-foreground">Synced to your dashboard</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Developer Mode Explanation & Installation Steps Section */}
         <section className="mx-auto max-w-5xl px-6 pb-16">
           <div className="glass-strong rounded-3xl p-6 sm:p-10 border border-white/10 shadow-2xl space-y-8">
-            <div className="border-b border-border/20 pb-6 text-left space-y-1">
-              <h2 className="text-xl font-extrabold flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-primary" /> Development Installation Steps
+            <div className="border-b border-border/20 pb-6 text-left space-y-2">
+              <div className="inline-flex items-center gap-2 text-xs font-bold text-primary bg-primary/10 px-3 py-1 rounded-full border border-primary/20">
+                <ToggleRight className="h-4 w-4" /> Chrome Developer Mode Required
+              </div>
+              <h2 className="text-xl font-extrabold text-foreground">
+                Step-by-Step Unpacked Extension Installation
               </h2>
               <p className="text-xs text-muted-foreground">
-                Follow these step-by-step instructions to load the QueueIt extension into your browser using Developer Mode.
+                Chrome requires enabling <strong className="text-foreground">Developer mode</strong> to load local extensions using <strong className="text-foreground">Load unpacked</strong>. Follow the numbered steps below:
               </p>
             </div>
 
@@ -238,16 +324,23 @@ export default function ExtensionSetupPage() {
                 Head over to your QueueIt dashboard to manage your queue, read AI summaries, and set priorities.
               </p>
             </div>
-            <Link href="/dashboard">
-              <Button
-                variant="outline"
-                size="sm"
-                className="glass-strong border-border/40 text-xs font-semibold hover:bg-secondary/60 transition-all cursor-pointer gap-2 shrink-0 h-10 px-5"
-              >
-                <span>Open Dashboard</span>
-                <ArrowRightIcon className="h-3.5 w-3.5 text-primary" />
-              </Button>
-            </Link>
+            <div className="flex items-center gap-3 shrink-0">
+              <Link href="/login">
+                <Button variant="ghost" size="sm" className="text-xs font-semibold hover:text-foreground cursor-pointer">
+                  Sign in
+                </Button>
+              </Link>
+              <Link href="/dashboard">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="glass-strong border-border/40 text-xs font-semibold hover:bg-secondary/60 transition-all cursor-pointer gap-2 h-10 px-5"
+                >
+                  <span>Open Dashboard</span>
+                  <ArrowRightIcon className="h-3.5 w-3.5 text-primary" />
+                </Button>
+              </Link>
+            </div>
           </div>
         </section>
       </main>

@@ -183,7 +183,7 @@ export default function AnalyticsPage() {
         return;
       }
 
-      const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "")}/api`;
+      const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "")}/api`;
       const response = await fetch(`${API_BASE}/items/analytics/export`, {
         headers: {
           Authorization: `Bearer ${session.access_token}`,

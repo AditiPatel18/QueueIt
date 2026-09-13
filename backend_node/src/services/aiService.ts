@@ -81,19 +81,20 @@ Preserve all technical terms, code snippet names, algorithms, software names, an
 Return ONLY the final translated English text without any explanations, meta-comments, or preambles.
 
 Text:
-${text.substring(0, 50000)}`;
+${text.substring(0, 10000)}`;
 
-  const models = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'];
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
   for (const model of models) {
     try {
       const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            maxOutputTokens: 8000,
+            maxOutputTokens: 2000,
             temperature: 0.2,
           },
         }),
@@ -345,7 +346,7 @@ CONTENT TYPE: "${contentType || platform.source_type}"
 SOURCE DOMAIN: "${platform.source_name}"
 
 ACTUAL EXTRACTED CONTENT:
-"${snippet.substring(0, 65000)}"
+"${snippet.substring(0, 15000)}"
 
 CRITICAL SUMMARIZATION RULES:
 1. Whole-Content Synthesis: Identify the main topic, key concepts, core mechanisms, techniques, and conclusions covered throughout the entire material. Combine related ideas into a coherent, flowing summary.
@@ -356,7 +357,7 @@ CRITICAL SUMMARIZATION RULES:
 6. Zero Generic Filler: Omit greetings, repetition, non-essential examples, irrelevant details, and generic filler words like "essential concepts", "key principles", or "practical applications".
 7. Output Format: Return ONLY the final summary text (1-2 plain text paragraphs in clear English). Do not include markdown headers, titles, bullet points, preambles, or verification notes.`;
 
-    const models = ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'];
+    const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
 
     for (const model of models) {
       try {
@@ -364,10 +365,11 @@ CRITICAL SUMMARIZATION RULES:
         const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(7000),
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
-              maxOutputTokens: 2500,
+              maxOutputTokens: 1200,
               temperature: 0.35,
             },
           }),
@@ -560,7 +562,7 @@ CRITICAL SUMMARIZATION RULES:
       try {
         await supabase.from('items').update({
           processing_status: 'failed',
-          ai_summary: 'AI summary processing encountered an error. Click retry to try again.',
+          ai_summary: 'Summary unavailable',
         }).eq('id', itemId);
       } catch { /* non-fatal */ }
     }

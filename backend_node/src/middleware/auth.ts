@@ -10,6 +10,27 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+const ACCOUNT_ALIAS_MAP: Record<string, string> = {
+  '87975154-d112-4aeb-96e4-b6a9e120e9dc': 'dd669cb6-bbda-4e22-92b6-0f723849a1af',
+  'a63fddcf-4dee-47be-b1a3-6fcf956ed3a5': 'dd669cb6-bbda-4e22-92b6-0f723849a1af',
+};
+
+const EMAIL_ALIAS_MAP: Record<string, string> = {
+  'aditi18407@gmail.com': 'dd669cb6-bbda-4e22-92b6-0f723849a1af',
+  'aditipatel18407@gmail.com': 'dd669cb6-bbda-4e22-92b6-0f723849a1af',
+  'adipatel18407@gmail.com': 'dd669cb6-bbda-4e22-92b6-0f723849a1af',
+};
+
+export function resolvePrimaryUserId(rawUserId: string, email?: string): string {
+  if (ACCOUNT_ALIAS_MAP[rawUserId]) {
+    return ACCOUNT_ALIAS_MAP[rawUserId];
+  }
+  if (email && EMAIL_ALIAS_MAP[email.toLowerCase().trim()]) {
+    return EMAIL_ALIAS_MAP[email.toLowerCase().trim()];
+  }
+  return rawUserId;
+}
+
 export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -28,10 +49,12 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       return res.status(401).json({ detail: 'Invalid or expired token' });
     }
 
+    const primaryUserId = resolvePrimaryUserId(data.user.id, data.user.email);
+
     req.user = {
       ...data.user,
-      id: data.user.id,
-      sub: data.user.id,
+      id: primaryUserId,
+      sub: primaryUserId,
     };
     
     return next();

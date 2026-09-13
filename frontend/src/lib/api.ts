@@ -4,8 +4,8 @@
 import { createClient } from "./supabase/client";
 import type { ItemFilters, QueueItem, ReadingAnalyticsData, ReadingAnalyticsDashboardData, RemindersResponse } from "@/types";
 
-// Normalise base URL – strip trailing slash to avoid "//api" problems
-const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/+$/, "")}/api`;
+// Normalise base URL – strip trailing slash and hyphen to avoid "//api" or malformed URL problems
+const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "")}/api`;
 
 // ---------------------------------------------------------------------------
 // Core client with auth header injection

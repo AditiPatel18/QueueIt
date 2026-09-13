@@ -47,33 +47,66 @@ export default function LoginPage() {
     const cleanEmail = email.trim().toLowerCase();
     const supabase = createClient();
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: cleanEmail,
-      password,
-    });
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
 
-    if (error) {
-      console.error("[Supabase Auth Login Error]", error);
-      const msg = error.message.toLowerCase();
-      const code = error.code ? String(error.code).toLowerCase() : "";
+      if (error) {
+        console.error("[Supabase Auth Login Error]", error);
+        const msg = (error.message || "").toLowerCase();
+        const code = error.code ? String(error.code).toLowerCase() : "";
+        const status = (error as any).status;
 
-      if (msg.includes("confirm") || code === "email_not_confirmed") {
-        setError("Email not confirmed. Please check your email inbox and click the confirmation link before signing in.");
-      } else if (msg.includes("invalid login credentials") || code === "invalid_credentials") {
-        setError("Invalid email or password. If you originally created your account with Google, please use 'Continue with Google' or click 'Forgot password?' to set a password.");
-      } else if (msg.includes("user not found") || code === "user_not_found") {
-        setError("No account found with this email address. Please sign up first.");
-      } else if (msg.includes("rate limit") || code === "over_request_rate_limit") {
-        setError("Too many login attempts. Please wait a few minutes and try again.");
-      } else {
-        setError(error.message);
+        // Check Network Error
+        if (
+          (typeof navigator !== "undefined" && !navigator.onLine) ||
+          error.name === "TypeError" ||
+          msg.includes("fetch") ||
+          msg.includes("network") ||
+          msg.includes("failed to fetch") ||
+          msg.includes("connection")
+        ) {
+          setError("Network error. Please check your internet connection and try again.");
+        }
+        // Check Email Not Confirmed
+        else if (code === "email_not_confirmed" || msg.includes("confirm")) {
+          setError("Email not confirmed. Please check your email inbox and click the confirmation link before signing in.");
+        }
+        // Check User Not Found
+        else if (code === "user_not_found" || msg.includes("user not found")) {
+          setError("No account found with this email address. Please check your email or sign up first.");
+        }
+        // Check Rate Limit
+        else if (
+          code === "over_request_rate_limit" ||
+          code === "rate_limit" ||
+          status === 429 ||
+          msg.includes("rate limit") ||
+          msg.includes("too many")
+        ) {
+          setError("Too many login attempts. Please wait a few minutes and try again.");
+        }
+        // Check Invalid Credentials / Google OAuth user without password
+        else if (code === "invalid_credentials" || msg.includes("invalid login credentials") || status === 400) {
+          setError(
+            "Invalid email or password. If you originally created your account with Google, please use 'Continue with Google'."
+          );
+        } else {
+          setError(error.message || "An unexpected login error occurred. Please try again.");
+        }
+        setLoading(false);
+        return;
       }
-      setLoading(false);
-      return;
-    }
 
-    if (data?.session) {
-      window.location.href = "/dashboard";
+      if (data?.session) {
+        window.location.href = "/dashboard";
+      }
+    } catch (err: any) {
+      console.error("[Unexpected Login Exception]", err);
+      setError("Network error. Please check your internet connection and try again.");
+      setLoading(false);
     }
   };
 
@@ -171,17 +204,9 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="password" className="text-sm font-medium">
-                  Password
-                </Label>
-                <Link
-                  href="/reset-password"
-                  className="text-xs text-primary hover:text-primary/80 transition-colors font-medium"
-                >
-                  Forgot password?
-                </Link>
-              </div>
+              <Label htmlFor="password" className="text-sm font-medium">
+                Password
+              </Label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input

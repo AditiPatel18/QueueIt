@@ -101,6 +101,21 @@ export async function POST(request: Request) {
     }
 
     const user = userData.user;
+    const ACCOUNT_ALIAS_MAP: Record<string, string> = {
+      "87975154-d112-4aeb-96e4-b6a9e120e9dc": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
+      "a63fddcf-4dee-47be-b1a3-6fcf956ed3a5": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
+    };
+    const EMAIL_ALIAS_MAP: Record<string, string> = {
+      "aditi18407@gmail.com": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
+      "aditipatel18407@gmail.com": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
+      "adipatel18407@gmail.com": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
+    };
+
+    const targetUserId =
+      ACCOUNT_ALIAS_MAP[user.id] ||
+      (user.email && EMAIL_ALIAS_MAP[user.email.toLowerCase().trim()]) ||
+      user.id;
+
     const body = await request.json().catch(() => ({}));
     const rawUrl = body.url;
 
@@ -121,7 +136,7 @@ export async function POST(request: Request) {
     const { data: existingData } = await supabase
       .from("items")
       .select("*")
-      .eq("user_id", user.id)
+      .eq("user_id", targetUserId)
       .or(`normalized_url.eq.${normalized},url.eq.${cleanUrl}`)
       .limit(1)
       .maybeSingle();
@@ -143,7 +158,7 @@ export async function POST(request: Request) {
     const itemId = crypto.randomUUID();
     const itemData: Record<string, any> = {
       id: itemId,
-      user_id: user.id,
+      user_id: targetUserId,
       url: cleanUrl,
       normalized_url: normalized,
       title: itemTitle,
@@ -166,7 +181,7 @@ export async function POST(request: Request) {
       // Fallback insert with minimal required columns
       const minimalData = {
         id: itemId,
-        user_id: user.id,
+        user_id: targetUserId,
         url: cleanUrl,
         title: itemTitle,
         status: "unread",
