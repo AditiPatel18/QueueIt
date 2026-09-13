@@ -86,12 +86,17 @@ export async function POST(request: Request) {
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://xgifnzhpfexksoxavcyc.supabase.co";
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_OtLsF_q1V1Nk-aK_kpwX_g_bl85-K_O";
+    const supabaseServiceKey =
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SECRET_KEY ||
+      process.env.SUPABASE_KEY;
 
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    // 1. Authenticate user from Bearer token
+    const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       auth: { persistSession: false },
     });
 
-    const { data: userData, error: authError } = await supabase.auth.getUser(token);
+    const { data: userData, error: authError } = await authClient.auth.getUser(token);
     if (authError || !userData?.user) {
       console.warn("[API /items] Supabase auth check failed:", authError?.message);
       return NextResponse.json(
@@ -127,17 +132,28 @@ export async function POST(request: Request) {
     }
 
     const cleanUrl = rawUrl.trim();
-    const normalized = normalizeUrl(cleanUrl);
     const sourceType = resolvePlatformType(cleanUrl);
     const sourceName = resolveSourceName(cleanUrl);
     const itemTitle = body.title?.trim() || cleanUrl;
 
+    // 2. Database client: use service-role key if present on the server, otherwise fallback to user-scoped client with Bearer token
+    const dbClient = supabaseServiceKey
+      ? createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } })
+      : createClient(supabaseUrl, supabaseAnonKey, {
+          global: {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+          auth: { persistSession: false },
+        });
+
     // Check for existing duplicate item for this user
-    const { data: existingData } = await supabase
+    const { data: existingData } = await dbClient
       .from("items")
       .select("*")
       .eq("user_id", targetUserId)
-      .or(`normalized_url.eq.${normalized},url.eq.${cleanUrl}`)
+      .eq("url", cleanUrl)
       .limit(1)
       .maybeSingle();
 
@@ -154,23 +170,25 @@ export async function POST(request: Request) {
       );
     }
 
-    // Prepare item data for insert
+    // Prepare item data for insert matching Postgres schema
     const itemId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
     const itemData: Record<string, any> = {
       id: itemId,
       user_id: targetUserId,
       url: cleanUrl,
-      normalized_url: normalized,
       title: itemTitle,
-      source_type: sourceType,
+      content_type: sourceType,
       source_name: sourceName,
       status: "unread",
       processing_status: "completed",
       is_favorite: false,
-      added_at: new Date().toISOString(),
+      added_at: nowIso,
+      created_at: nowIso,
+      updated_at: nowIso,
     };
 
-    const { data: insertedItem, error: insertError } = await supabase
+    const { data: insertedItem, error: insertError } = await dbClient
       .from("items")
       .insert(itemData)
       .select()
@@ -186,7 +204,7 @@ export async function POST(request: Request) {
         title: itemTitle,
         status: "unread",
       };
-      const { data: fallbackItem, error: fallbackError } = await supabase
+      const { data: fallbackItem, error: fallbackError } = await dbClient
         .from("items")
         .insert(minimalData)
         .select()
