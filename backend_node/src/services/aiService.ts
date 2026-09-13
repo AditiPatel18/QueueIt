@@ -7,55 +7,32 @@ import { resolvePlatformInfo } from '../utils/urlHelper';
 
 dotenv.config();
 
-/** Helper function to extract YouTube metadata, duration, and transcript in Node.js */
+/** Helper function to extract YouTube metadata, duration, and transcript using direct Innertube Android client RPC */
 async function fetchYouTubeContent(url: string): Promise<{ transcript: string; title?: string; durationSeconds?: number }> {
   try {
     const vMatch = url.match(/(?:v=|\/embed\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     const videoId = vMatch ? vMatch[1] : null;
 
+    if (!videoId) {
+      return { transcript: '' };
+    }
+
     let title = '';
     let durationSeconds = 0;
     let transcript = '';
 
-    // 1. Fetch initial watch page HTML for metadata and INNERTUBE_API_KEY
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-    });
-    const html = await res.text();
+    const publicKeys = [
+      'AIzaSyAO_FJ2SlqU8Q4STEihQIxomIq_S9waxqY',
+      'AIzaSyC1xlsmZOMtvD_3epXvIqf4gE3b-t9R_2E',
+      'AIzaSyBflxtu4so615_dC_YyH9Z2zL6q9vU2-gA',
+    ];
 
-    // Extract Title
-    const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
-    if (titleMatch) {
-      title = titleMatch[1].replace(' - YouTube', '').trim();
-    }
+    console.log(`[AIService] Extracting YouTube metadata & captions for video ID ${videoId}...`);
 
-    // Extract ISO 8601 duration (itemprop="duration" content="PT13M42S") or lengthSeconds / approxDurationMs
-    const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                     html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                     html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
-
-    if (isoMatch) {
-      const hours = parseInt(isoMatch[1] || '0', 10);
-      const mins = parseInt(isoMatch[2] || '0', 10);
-      const secs = parseInt(isoMatch[3] || '0', 10);
-      durationSeconds = hours * 3600 + mins * 60 + secs;
-    } else {
-      const lenMatch = html.match(/"lengthSeconds":"(\d+)"/) || html.match(/"approxDurationMs":"(\d+)"/);
-      if (lenMatch) {
-        durationSeconds = lenMatch[1].length > 6 ? Math.round(parseInt(lenMatch[1], 10) / 1000) : parseInt(lenMatch[1], 10);
-      }
-    }
-
-    // 2. Primary Method: Innertube Android Client (bypasses poToken & web signature restrictions)
-    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"/);
-    const apiKey = apiKeyMatch ? apiKeyMatch[1] : null;
-
-    if (videoId && apiKey) {
+    // 1. Direct Innertube Android Player RPC (does NOT rely on scraping watch-page HTML)
+    for (const key of publicKeys) {
       try {
-        const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
+        const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -74,18 +51,44 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
           }),
         });
 
-        if (playerRes.ok) {
-          const playerData: any = await playerRes.json();
-          const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (!playerRes.ok) {
+          console.warn(`[AIService] Innertube player request returned HTTP ${playerRes.status}`);
+          continue;
+        }
 
-          if (captionTracks && captionTracks.length > 0) {
-            const enTrack = captionTracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || captionTracks[0];
-            if (enTrack?.baseUrl) {
-              const capRes = await fetch(enTrack.baseUrl, {
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-                },
-              });
+        const playerData: any = await playerRes.json();
+
+        // Extract Title and Duration from videoDetails
+        if (playerData?.videoDetails) {
+          if (!title && playerData.videoDetails.title) {
+            title = playerData.videoDetails.title.trim();
+          }
+          if (!durationSeconds && playerData.videoDetails.lengthSeconds) {
+            durationSeconds = parseInt(playerData.videoDetails.lengthSeconds, 10) || 0;
+          }
+        }
+
+        // Extract and resolve Caption Tracks
+        const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
+          console.log(`[AIService] Found ${captionTracks.length} caption track(s) for video ${videoId}`);
+
+          // Prefer English track if available, else pick primary track
+          const enTrack = captionTracks.find((t: any) =>
+            t.languageCode === 'en' ||
+            t.vssId?.includes('en') ||
+            t.vssId?.includes('.en') ||
+            t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
+          ) || captionTracks[0];
+
+          if (enTrack?.baseUrl) {
+            const capRes = await fetch(enTrack.baseUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+              },
+            });
+
+            if (capRes.ok) {
               const capXml = await capRes.text();
               if (capXml && capXml.length > 0) {
                 transcript = capXml
@@ -99,50 +102,90 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
                   .replace(/&quot;/g, '"')
                   .replace(/\s+/g, ' ')
                   .trim();
+
+                console.log(`[AIService] Successfully extracted caption text (${transcript.length} chars, track: ${enTrack.languageCode || 'unknown'}) for video ${videoId}`);
               }
             }
           }
         }
-      } catch (innerErr) {
-        console.warn('[AIService] Innertube Android caption fetch warning:', innerErr);
+
+        // If title or transcript was resolved, stop iterating keys
+        if (title || transcript) {
+          break;
+        }
+      } catch (keyErr: any) {
+        console.warn(`[AIService] Innertube Android player attempt warning:`, keyErr?.message || keyErr);
       }
     }
 
-    // 3. Fallback Method: Extract from HTML captionTracks if Innertube didn't return
-    if (!transcript) {
-      const captionMatch = html.match(/"captionTracks":\s*(\[.*?\])/);
-      if (captionMatch) {
-        try {
-          const tracks = JSON.parse(captionMatch[1]);
-          const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
-          if (enTrack?.baseUrl) {
-            const capRes = await fetch(enTrack.baseUrl, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-              },
-            });
-            const capXml = await capRes.text();
-            if (capXml && capXml.length > 0) {
-              transcript = capXml
-                .replace(/<text[^>]*>/g, ' ')
-                .replace(/<\/text>/g, ' ')
-                .replace(/<[^>]+>/g, '')
-                .replace(/&amp;/g, '&')
-                .replace(/&lt;/g, '<')
-                .replace(/&gt;/g, '>')
-                .replace(/&#39;/g, "'")
-                .replace(/&quot;/g, '"')
-                .replace(/\s+/g, ' ')
-                .trim();
+    // 2. Fallback: If title or transcript is still missing, attempt secondary watch page HTML scrape
+    if (!transcript || !title) {
+      try {
+        const res = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+        });
+        if (res.ok) {
+          const html = await res.text();
+
+          if (!title) {
+            const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
+            if (titleMatch) {
+              title = titleMatch[1].replace(' - YouTube', '').trim();
             }
           }
-        } catch { /* non-fatal caption parse */ }
+
+          if (!durationSeconds) {
+            const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
+                             html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
+                             html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
+            if (isoMatch) {
+              const hours = parseInt(isoMatch[1] || '0', 10);
+              const mins = parseInt(isoMatch[2] || '0', 10);
+              const secs = parseInt(isoMatch[3] || '0', 10);
+              durationSeconds = hours * 3600 + mins * 60 + secs;
+            }
+          }
+
+          if (!transcript) {
+            const captionMatch = html.match(/"captionTracks":\s*(\[.*?\])/);
+            if (captionMatch) {
+              const tracks = JSON.parse(captionMatch[1]);
+              const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
+              if (enTrack?.baseUrl) {
+                const capRes = await fetch(enTrack.baseUrl, {
+                  headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                  },
+                });
+                const capXml = await capRes.text();
+                if (capXml && capXml.length > 0) {
+                  transcript = capXml
+                    .replace(/<text[^>]*>/g, ' ')
+                    .replace(/<\/text>/g, ' ')
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&#39;/g, "'")
+                    .replace(/&quot;/g, '"')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                }
+              }
+            }
+          }
+        }
+      } catch (htmlErr: any) {
+        console.warn('[AIService] HTML fallback extraction warning:', htmlErr?.message || htmlErr);
       }
     }
 
     return { transcript, title, durationSeconds };
-  } catch (e) {
-    console.warn('[AIService] YouTube extraction error:', e);
+  } catch (e: any) {
+    console.warn('[AIService] YouTube extraction error:', e?.message || e);
     return { transcript: '' };
   }
 }
@@ -168,14 +211,14 @@ Return ONLY the final translated English text without any explanations, meta-com
 Text:
 ${text.substring(0, 10000)}`;
 
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+  const models = ['gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
   for (const model of models) {
     try {
       const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(15000),
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
@@ -453,7 +496,7 @@ CRITICAL SUMMARIZATION RULES:
 6. Zero Generic Filler: Omit greetings, repetition, non-essential examples, irrelevant details, and generic filler words like "essential concepts", "key principles", or "practical applications".
 7. Output Format: Return ONLY the final summary text (1-2 plain text paragraphs in clear English). Do not include markdown headers, titles, bullet points, preambles, or verification notes.`;
 
-    const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+    const models = ['gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
 
     for (const model of models) {
       try {
@@ -461,7 +504,7 @@ CRITICAL SUMMARIZATION RULES:
         const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(7000),
+          signal: AbortSignal.timeout(15000),
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
