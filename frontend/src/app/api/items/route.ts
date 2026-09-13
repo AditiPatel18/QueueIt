@@ -134,15 +134,19 @@ export async function POST(request: Request) {
     const cleanUrl = rawUrl.trim();
     const itemTitle = body.title?.trim() || cleanUrl;
 
-    // 2. Try proxying to backend service first if configured
-    const backendBase = (process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_URL || "").replace(/[-/]+$/, "");
+    // 2. Try proxying to backend service first (Render or configured backend)
+    const rawBackendUrl = process.env.BACKEND_API_URL || process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+    const backendBase = rawBackendUrl.replace(/[-/]+$/, "");
+
     if (backendBase && !backendBase.includes("localhost:3000")) {
       try {
+        console.log(`[API /items] Proxying save request for user ${targetUserId} to backend at: ${backendBase}`);
         const backendRes = await fetch(`${backendBase}/api/items`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${token}`,
+            "X-Authenticated-User-Id": targetUserId,
           },
           body: JSON.stringify({
             url: cleanUrl,
@@ -160,26 +164,34 @@ export async function POST(request: Request) {
               ...(isDup ? { "X-QueueIt-Duplicate": "true" } : {}),
             },
           });
+        } else {
+          const errText = await backendRes.text().catch(() => "");
+          console.warn(`[API /items] Backend responded with status ${backendRes.status}:`, errText);
         }
-      } catch (proxyErr) {
-        console.warn("[API /items] Backend proxy attempt failed, falling back to direct DB insert:", proxyErr);
+      } catch (proxyErr: any) {
+        console.warn(`[API /items] Backend proxy connection failed (${backendBase}):`, proxyErr?.message || proxyErr);
       }
     }
 
+    // 3. Server-side Direct Supabase Insertion (Fallback)
+    // Direct DB insertion requires a trusted server-side service role key to persist on behalf of authenticated users
+    if (!supabaseServiceKey) {
+      console.error("[API /items] Backend proxy was unreachable and SUPABASE_SERVICE_ROLE_KEY is not configured in server environment variables.");
+      return NextResponse.json(
+        {
+          detail: "Backend service is unreachable and SUPABASE_SERVICE_ROLE_KEY is not configured on the server. Please verify backend deployment and environment variables.",
+        },
+        { status: 503, headers: corsHeaders }
+      );
+    }
+
+    console.log(`[API /items] Executing trusted server-side insert via Supabase service client for user: ${targetUserId}`);
+    const dbClient = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false },
+    });
+
     const sourceType = resolvePlatformType(cleanUrl);
     const sourceName = resolveSourceName(cleanUrl);
-
-    // 3. Database client: use service-role key if present on the server, otherwise fallback to user-scoped client with Bearer token
-    const dbClient = supabaseServiceKey
-      ? createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } })
-      : createClient(supabaseUrl, supabaseAnonKey, {
-          global: {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          },
-          auth: { persistSession: false },
-        });
 
     // Check for existing duplicate item for this user
     const { data: existingData } = await dbClient
@@ -203,7 +215,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // Prepare item data for insert matching Postgres schema
+    // Prepare item data matching exact database schema
     const itemId = crypto.randomUUID();
     const nowIso = new Date().toISOString();
     const itemData: Record<string, any> = {
