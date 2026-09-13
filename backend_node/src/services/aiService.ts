@@ -10,9 +10,17 @@ dotenv.config();
 /** Helper function to extract YouTube metadata, duration, and transcript in Node.js */
 async function fetchYouTubeContent(url: string): Promise<{ transcript: string; title?: string; durationSeconds?: number }> {
   try {
+    const vMatch = url.match(/(?:v=|\/embed\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    const videoId = vMatch ? vMatch[1] : null;
+
+    let title = '';
+    let durationSeconds = 0;
+    let transcript = '';
+
+    // 1. Fetch initial watch page HTML for metadata and INNERTUBE_API_KEY
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
       },
     });
@@ -20,14 +28,15 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
 
     // Extract Title
     const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
-    let title = titleMatch ? titleMatch[1].replace(' - YouTube', '').trim() : '';
+    if (titleMatch) {
+      title = titleMatch[1].replace(' - YouTube', '').trim();
+    }
 
     // Extract ISO 8601 duration (itemprop="duration" content="PT13M42S") or lengthSeconds / approxDurationMs
     const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
                      html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
                      html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
 
-    let durationSeconds = 0;
     if (isoMatch) {
       const hours = parseInt(isoMatch[1] || '0', 10);
       const mins = parseInt(isoMatch[2] || '0', 10);
@@ -40,19 +49,95 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
       }
     }
 
-    // Extract transcript caption tracks if available
-    let transcript = '';
-    const captionMatch = html.match(/"captionTracks":\s*(\[.*?\])/);
-    if (captionMatch) {
+    // 2. Primary Method: Innertube Android Client (bypasses poToken & web signature restrictions)
+    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"/);
+    const apiKey = apiKeyMatch ? apiKeyMatch[1] : null;
+
+    if (videoId && apiKey) {
       try {
-        const tracks = JSON.parse(captionMatch[1]);
-        const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
-        if (enTrack?.baseUrl) {
-          const capRes = await fetch(enTrack.baseUrl);
-          const capXml = await capRes.text();
-          transcript = capXml.replace(/<text[^>]*>/g, ' ').replace(/<\/text>/g, ' ').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
+        const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 11; en_US; Pixel 5 Build/RD1A.201105.003.C1)',
+          },
+          body: JSON.stringify({
+            context: {
+              client: {
+                clientName: 'ANDROID',
+                clientVersion: '20.10.38',
+                hl: 'en',
+                gl: 'US',
+              },
+            },
+            videoId: videoId,
+          }),
+        });
+
+        if (playerRes.ok) {
+          const playerData: any = await playerRes.json();
+          const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+          if (captionTracks && captionTracks.length > 0) {
+            const enTrack = captionTracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || captionTracks[0];
+            if (enTrack?.baseUrl) {
+              const capRes = await fetch(enTrack.baseUrl, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                },
+              });
+              const capXml = await capRes.text();
+              if (capXml && capXml.length > 0) {
+                transcript = capXml
+                  .replace(/<text[^>]*>/g, ' ')
+                  .replace(/<\/text>/g, ' ')
+                  .replace(/<[^>]+>/g, '')
+                  .replace(/&amp;/g, '&')
+                  .replace(/&lt;/g, '<')
+                  .replace(/&gt;/g, '>')
+                  .replace(/&#39;/g, "'")
+                  .replace(/&quot;/g, '"')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+              }
+            }
+          }
         }
-      } catch { /* non-fatal caption parse */ }
+      } catch (innerErr) {
+        console.warn('[AIService] Innertube Android caption fetch warning:', innerErr);
+      }
+    }
+
+    // 3. Fallback Method: Extract from HTML captionTracks if Innertube didn't return
+    if (!transcript) {
+      const captionMatch = html.match(/"captionTracks":\s*(\[.*?\])/);
+      if (captionMatch) {
+        try {
+          const tracks = JSON.parse(captionMatch[1]);
+          const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
+          if (enTrack?.baseUrl) {
+            const capRes = await fetch(enTrack.baseUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+              },
+            });
+            const capXml = await capRes.text();
+            if (capXml && capXml.length > 0) {
+              transcript = capXml
+                .replace(/<text[^>]*>/g, ' ')
+                .replace(/<\/text>/g, ' ')
+                .replace(/<[^>]+>/g, '')
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&#39;/g, "'")
+                .replace(/&quot;/g, '"')
+                .replace(/\s+/g, ' ')
+                .trim();
+            }
+          }
+        } catch { /* non-fatal caption parse */ }
+      }
     }
 
     return { transcript, title, durationSeconds };
@@ -325,17 +410,28 @@ export class AIService {
     contentType: string = 'article',
     snippet: string = ''
   ): Promise<{ summary: string; tags: string[]; priority: number }> {
+    const platform = resolvePlatformInfo(url);
+    const isYouTube = platform.source_type === 'youtube' || url.includes('youtube.com') || url.includes('youtu.be');
+
+    // If YouTube video has no transcript, do NOT generate a fake/generic summary
+    if (isYouTube && (!snippet || !snippet.trim())) {
+      return {
+        summary: 'Transcript unavailable',
+        tags: ['video', 'youtube'],
+        priority: 50,
+      };
+    }
+
     const apiKey = this.getApiKey();
     if (!apiKey) {
       console.warn('[AIService] GEMINI_API_KEY is missing. Using fallback summary.');
       return {
-        summary: `${title || 'Content'} details the core algorithms, implementation steps, and analytical concepts provided in the source material, providing immediate technical context and conclusions.`,
+        summary: isYouTube ? 'Transcript unavailable' : `${title || 'Content'} details the core algorithms, implementation steps, and analytical concepts provided in the source material, providing immediate technical context and conclusions.`,
         tags: [contentType || 'article', 'general'],
         priority: 50,
       };
     }
 
-    const platform = resolvePlatformInfo(url);
     const prompt = `You are an expert technical knowledge summarizer.
 
 TASK:
@@ -412,7 +508,9 @@ CRITICAL SUMMARIZATION RULES:
     }
 
     // High quality fallback if API calls fail or return incomplete outputs
-    const fallbackText = `${title || 'Content'} details the core algorithms, implementation steps, and analytical concepts provided in the source material, providing immediate technical context and conclusions.`;
+    const fallbackText = isYouTube
+      ? 'Transcript unavailable'
+      : `${title || 'Content'} details the core algorithms, implementation steps, and analytical concepts provided in the source material, providing immediate technical context and conclusions.`;
     return {
       summary: fallbackText,
       tags: [platform.source_type || 'article', 'general'],
