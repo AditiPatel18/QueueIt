@@ -6,14 +6,19 @@ import type { ItemFilters, QueueItem, ReadingAnalyticsData, ReadingAnalyticsDash
 
 // Normalise base URL – strip trailing slash and hyphen to avoid "//api" or malformed URL problems
 export function getApiBase(): string {
-  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  const envUrl = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_API_URL;
   if (envUrl && envUrl.trim() !== "") {
-    return `${envUrl.replace(/[-/]+$/, "")}/api`;
+    return `${envUrl.trim().replace(/[-/]+$/, "")}/api`;
   }
   if (typeof window !== "undefined") {
-    return `${window.location.origin.replace(/[-/]+$/, "")}/api`;
+    if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      return "http://localhost:8001/api";
+    }
   }
-  return "http://localhost:8001/api";
+  if (process.env.NODE_ENV === "development") {
+    return "http://localhost:8001/api";
+  }
+  return "https://queueit-backend-v62p.onrender.com/api";
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ jest.mock('../../src/config/supabase', () => {
       error: null,
     }),
   };
-  const mockFrom = jest.fn().mockReturnValue({
+  const mockChain: any = {
     select: jest.fn().mockReturnThis(),
     insert: jest.fn().mockReturnThis(),
     update: jest.fn().mockReturnThis(),
@@ -19,7 +19,12 @@ jest.mock('../../src/config/supabase', () => {
     order: jest.fn().mockReturnThis(),
     limit: jest.fn().mockReturnThis(),
     single: jest.fn().mockResolvedValue({ data: [], error: null }),
-  });
+    maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+  };
+  mockChain.then = function (onfulfilled: any) {
+    return Promise.resolve({ data: [], error: null }).then(onfulfilled);
+  };
+  const mockFrom = jest.fn().mockReturnValue(mockChain);
   return {
     supabase: { auth: mockAuth, from: mockFrom },
     supabaseAuth: { auth: mockAuth, from: mockFrom },
