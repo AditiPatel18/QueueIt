@@ -3,9 +3,7 @@ import path from "path";
 import JSZip from "jszip";
 
 const rootDir = path.resolve(process.cwd(), "..");
-const extensionDir = fs.existsSync(path.join(rootDir, "extension-v2"))
-  ? path.join(rootDir, "extension-v2")
-  : path.join(rootDir, "extension");
+const extensionDir = path.join(rootDir, "extension");
 const outputDir = path.join(process.cwd(), "public", "extension");
 const outputPath = path.join(outputDir, "queueit-extension.zip");
 const legacyOutputPath = path.join(process.cwd(), "public", "queueit-extension.zip");
