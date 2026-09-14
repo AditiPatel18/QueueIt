@@ -383,7 +383,8 @@ export class NotificationService {
             }
 
             // Setup recommendation fields
-            const dashboardUrl = (process.env.FRONTEND_URL || 'http://localhost:3000') + '/dashboard';
+            const frontendBase = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://queueit-one.vercel.app' : 'http://localhost:3000');
+            const dashboardUrl = `${frontendBase.replace(/[-/]+$/, '')}/dashboard`;
             let itemTitle = 'an item from your queue';
             let itemUrl = itemId ? `${dashboardUrl}?item=${itemId}` : dashboardUrl;
             let priorityScore = 50.0;

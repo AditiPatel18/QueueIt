@@ -47,11 +47,11 @@ export async function updateSession(request: NextRequest) {
 
   console.log(`[middleware] Path: ${request.nextUrl.pathname}, User: ${user ? user.email : "null"}`);
 
-  // Protect dashboard routes — redirect to login if not authenticated
-  if (
-    !user &&
-    request.nextUrl.pathname.startsWith("/dashboard")
-  ) {
+  // Protect dashboard & protected app routes — redirect to login if not authenticated
+  const protectedPaths = ["/dashboard", "/analytics", "/chat", "/history", "/profile", "/update-password"];
+  const isProtected = protectedPaths.some((path) => request.nextUrl.pathname.startsWith(path));
+
+  if (!user && isProtected) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     console.log(`[middleware] Guard redirect to login from: ${request.nextUrl.pathname}`);

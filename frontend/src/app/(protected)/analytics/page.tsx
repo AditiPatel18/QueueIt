@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { getApiBase } from "@/lib/api";
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -183,8 +184,8 @@ export default function AnalyticsPage() {
         return;
       }
 
-      const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "")}/api`;
-      const response = await fetch(`${API_BASE}/items/analytics/export`, {
+      const apiBase = getApiBase();
+      const response = await fetch(`${apiBase}/items/analytics/export`, {
         headers: {
           Authorization: `Bearer ${session.access_token}`,
         },

@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
+import { getApiBase } from "@/lib/api";
 import { useCollections } from "@/hooks/use-swr-queries";
 import {
   LinkIcon,
@@ -89,8 +90,8 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
         } = await supabase.auth.getSession();
         if (!session?.access_token) return;
 
-        const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "");
-        const response = await fetch(`${API_URL}/api/items/suggest-collection`, {
+        const apiBase = getApiBase();
+        const response = await fetch(`${apiBase}/items/suggest-collection`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -152,8 +153,8 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
         }
       }
 
-      const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "");
-      const requestUrl = `${API_URL}/api/items`;
+      const apiBase = getApiBase();
+      const requestUrl = `${apiBase}/items`;
 
       console.log("[AddItem] POST", requestUrl, requestBody);
 
@@ -171,7 +172,7 @@ export function AddItemDialog({ trigger, onItemAdded }: AddItemDialogProps) {
         // Network-level failure — server is down, CORS blocked, etc.
         console.error("[AddItem] Network error:", networkErr);
         throw new Error(
-          "Cannot reach the backend server. Make sure it's running on port 8000."
+          "Cannot reach the backend server. Please verify your connection or try again."
         );
       }
 

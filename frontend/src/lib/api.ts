@@ -5,7 +5,16 @@ import { createClient } from "./supabase/client";
 import type { ItemFilters, QueueItem, ReadingAnalyticsData, ReadingAnalyticsDashboardData, RemindersResponse } from "@/types";
 
 // Normalise base URL – strip trailing slash and hyphen to avoid "//api" or malformed URL problems
-const API_BASE = `${(process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001").replace(/[-/]+$/, "")}/api`;
+export function getApiBase(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (envUrl && envUrl.trim() !== "") {
+    return `${envUrl.replace(/[-/]+$/, "")}/api`;
+  }
+  if (typeof window !== "undefined") {
+    return `${window.location.origin.replace(/[-/]+$/, "")}/api`;
+  }
+  return "http://localhost:8001/api";
+}
 
 // ---------------------------------------------------------------------------
 // Core client with auth header injection
@@ -34,7 +43,7 @@ export async function apiClient(
   };
 
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await fetch(`${getApiBase()}${endpoint}`, {
       ...options,
       headers,
     });
@@ -280,7 +289,7 @@ export function sendChatMessageStream(
         return;
       }
 
-      const response = await fetch(`${API_BASE}/chat`, {
+      const response = await fetch(`${getApiBase()}/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -211,7 +211,7 @@ Return ONLY the final translated English text without any explanations, meta-com
 Text:
 ${text.substring(0, 10000)}`;
 
-  const models = ['gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+  const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
   for (const model of models) {
     try {
       const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -496,7 +496,7 @@ CRITICAL SUMMARIZATION RULES:
 6. Zero Generic Filler: Omit greetings, repetition, non-essential examples, irrelevant details, and generic filler words like "essential concepts", "key principles", or "practical applications".
 7. Output Format: Return ONLY the final summary text (1-2 plain text paragraphs in clear English). Do not include markdown headers, titles, bullet points, preambles, or verification notes.`;
 
-    const models = ['gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+    const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
 
     for (const model of models) {
       try {

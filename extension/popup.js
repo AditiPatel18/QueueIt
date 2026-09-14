@@ -306,11 +306,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             successOverlay.classList.remove('hidden');
 
-            if (isDuplicate && data && data.id) {
-                const targetBaseUrl = session.appUrl || CONFIG.PRODUCTION_WEB_URL;
-                chrome.tabs.create({ url: `${targetBaseUrl}/?item=${data.id}` });
-            }
-
             setTimeout(() => {
                 window.close();
             }, 1500);

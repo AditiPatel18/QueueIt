@@ -18,6 +18,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentTitle = '';
     let currentType = 'article';
 
+    // Configuration constants
+    const CONFIG = {
+        PRODUCTION_WEB_URL: "https://queueit-one.vercel.app",
+        LOCAL_WEB_URLS: ["http://localhost:3000", "http://127.0.0.1:3000"],
+        PRODUCTION_API_URL: "https://queueit-one.vercel.app/api/items",
+        LOCAL_API_URL: "http://localhost:8001/api/items",
+    };
+
+    const APP_URLS = [CONFIG.PRODUCTION_WEB_URL, ...CONFIG.LOCAL_WEB_URLS];
+
     // Helpers to show toasts
     const hideAllToasts = () => {
         toastLoading.classList.add('hidden');
@@ -31,18 +41,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         toastEl.classList.remove('hidden');
     };
 
-    const showError = (msg, isLoginErr = false) => {
+    const showError = (msg, isLoginErr = false, targetWebUrl = CONFIG.PRODUCTION_WEB_URL) => {
         errorMessageEl.textContent = msg;
         showToast(toastError);
         footerActions.classList.remove('hidden');
         if (isLoginErr) {
-            actionBtn.textContent = "Open QueueIt";
+            actionBtn.textContent = "Open QueueIt Login";
+            actionBtn.onclick = () => {
+                chrome.tabs.create({ url: `${targetWebUrl}/login` });
+            };
         } else {
             actionBtn.textContent = "Open Dashboard";
+            actionBtn.onclick = () => {
+                chrome.tabs.create({ url: `${targetWebUrl}/dashboard` });
+            };
         }
-        actionBtn.onclick = () => {
-            chrome.tabs.create({ url: 'http://localhost:3000/' });
-        };
     };
 
     // Normalize URL for duplicate comparison
@@ -50,11 +63,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             const url = new URL(urlStr);
             url.hash = '';
-            // Remove trailing slash if path is longer than '/'
             if (url.pathname.length > 1 && url.pathname.endsWith('/')) {
                 url.pathname = url.pathname.slice(0, -1);
             }
-            // Filter query parameters
             const params = new URLSearchParams(url.search);
             const keysToDelete = [];
             for (const key of params.keys()) {
@@ -65,7 +76,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             keysToDelete.forEach(k => params.delete(k));
             
-            // Sort query parameters
             const sortedParams = Array.from(params.entries()).sort((a, b) => {
                 if (a[0] !== b[0]) return a[0].localeCompare(b[0]);
                 return a[1].localeCompare(b[1]);
@@ -93,17 +103,67 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Update Status Badge UI
     const updateBadgeUI = (type) => {
         statusBadge.textContent = type === 'twitter' ? 'X/Twitter' : type;
-        statusBadge.className = 'badge'; // Reset classes
+        statusBadge.className = 'badge';
         statusBadge.classList.add(`badge-${type}`);
     };
 
-    // Fetch auth token from localhost cookies
-    const getAuthToken = async (forceRefresh = false) => {
+    // Helper: extract auth token from cookies array
+    const extractTokenFromCookies = (cookies) => {
+        if (!cookies || cookies.length === 0) return null;
+
+        const authCookies = cookies.filter(
+            c => c.name && (c.name.includes("-auth-token") || c.name.includes("access-token") || c.name.includes("sb-"))
+        );
+
+        if (authCookies.length === 0) return null;
+
+        try {
+            authCookies.sort((a, b) => {
+                const aSuffix = a.name.split('.').pop();
+                const bSuffix = b.name.split('.').pop();
+                const aNum = isNaN(aSuffix) ? -1 : parseInt(aSuffix, 10);
+                const bNum = isNaN(bSuffix) ? -1 : parseInt(bSuffix, 10);
+                return aNum - bNum;
+            });
+
+            let value = authCookies.map(c => c.value).join('');
+            if (value.startsWith("base64-")) {
+                value = atob(value.substring(7));
+            } else {
+                try { value = decodeURIComponent(value); } catch (e) {}
+            }
+
+            let token = null;
+            if (value.startsWith("eyJ")) {
+                token = value;
+            } else {
+                try {
+                    const parsed = JSON.parse(value);
+                    if (Array.isArray(parsed) && parsed[0] && typeof parsed[0] === "string") {
+                        token = parsed[0];
+                    } else if (parsed && parsed.access_token) {
+                        token = parsed.access_token;
+                    }
+                } catch {
+                    if (value.includes("eyJ")) {
+                        const match = value.match(/eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+/);
+                        if (match) token = match[0];
+                    }
+                }
+            }
+            return token;
+        } catch (err) {
+            return null;
+        }
+    };
+
+    // Fetch auth session from production or local cookies
+    const getAuthSession = async (forceRefresh = false) => {
         return new Promise((resolve) => {
             if (!forceRefresh) {
-                chrome.storage.local.get(['authToken'], (result) => {
+                chrome.storage.local.get(['authToken', 'appUrl'], (result) => {
                     if (result && result.authToken) {
-                        return resolve(result.authToken);
+                        return resolve({ token: result.authToken, appUrl: result.appUrl || CONFIG.PRODUCTION_WEB_URL });
                     }
                     fetchFromCookies();
                 });
@@ -112,69 +172,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             function fetchFromCookies() {
-                const urls = ["http://localhost:3000", "http://127.0.0.1:3000"];
                 let urlIndex = 0;
 
                 function tryNextUrl() {
-                    if (urlIndex >= urls.length) {
-                        console.error("Auth token cookie not found on any URL");
+                    if (urlIndex >= APP_URLS.length) {
+                        console.error("Auth session cookie not found on any configured URL");
                         return resolve(null);
                     }
 
-                    const targetUrl = urls[urlIndex++];
+                    const targetUrl = APP_URLS[urlIndex++];
                     chrome.cookies.getAll({ url: targetUrl }, (cookies) => {
                         if (chrome.runtime.lastError || !cookies || cookies.length === 0) {
                             tryNextUrl();
                             return;
                         }
 
-                        // Look for Supabase auth token cookie (supports name format: sb-<project-id>-auth-token)
-                        const authCookies = cookies.filter(
-                            c => c.name && c.name.includes("-auth-token")
-                        );
-
-                        if (authCookies.length === 0) {
-                            tryNextUrl();
+                        const token = extractTokenFromCookies(cookies);
+                        if (token) {
+                            chrome.storage.local.set({ authToken: token, appUrl: targetUrl }, () => {
+                                resolve({ token, appUrl: targetUrl });
+                            });
                             return;
                         }
-
-                        try {
-                            // Sort cookies if split (with .0, .1 suffixes)
-                            authCookies.sort((a, b) => {
-                                const aSuffix = a.name.split('.').pop();
-                                const bSuffix = b.name.split('.').pop();
-                                const aNum = isNaN(aSuffix) ? -1 : parseInt(aSuffix, 10);
-                                const bNum = isNaN(bSuffix) ? -1 : parseInt(bSuffix, 10);
-                                return aNum - bNum;
-                            });
-
-                            let value = authCookies.map(c => c.value).join('');
-                            if (value.startsWith("base64-")) {
-                                value = atob(value.substring(7));
-                            } else {
-                                // URL decode cookie value since @supabase/ssr URL-encodes it
-                                value = decodeURIComponent(value);
-                            }
-
-                            const parsed = JSON.parse(value);
-                            let token = null;
-                            if (Array.isArray(parsed)) {
-                                token = parsed[0];
-                            } else if (parsed && parsed.access_token) {
-                                token = parsed.access_token;
-                            }
-
-                            if (token) {
-                                chrome.storage.local.set({ authToken: token }, () => {
-                                    resolve(token);
-                                });
-                                return;
-                            }
-                            tryNextUrl();
-                        } catch (err) {
-                            console.error("Token parse error for " + targetUrl + ":", err);
-                            tryNextUrl();
-                        }
+                        tryNextUrl();
                     });
                 }
 
@@ -195,7 +215,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentTitle = activeTab.title || "Untitled Page";
         currentType = detectType(currentUrl);
 
-        // Pre-populate with Tab info while content script loads
         previewTitleEl.textContent = currentTitle;
         previewTitleEl.classList.remove('title-loading');
         updateBadgeUI(currentType);
@@ -210,9 +229,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         readTimeEl.textContent = "~1 min read";
 
         // Check login credentials first
-        const token = await getAuthToken();
-        if (!token) {
-            showError("Please login to QueueIt", true);
+        const session = await getAuthSession();
+        if (!session || !session.token) {
+            showError("Please log in to QueueIt first", true, CONFIG.PRODUCTION_WEB_URL);
             return;
         }
 
@@ -253,28 +272,39 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function saveToQueue(url, title, isRetry = false) {
         showToast(toastLoading);
 
-        let token = await getAuthToken(isRetry);
-        if (!token) {
-            showError("Please login to QueueIt", true);
+        let session = await getAuthSession(isRetry);
+        if (!session || !session.token) {
+            showError("Please log in to QueueIt first", true, CONFIG.PRODUCTION_WEB_URL);
             return;
         }
 
+        const token = session.token;
+        const targetWebUrl = session.appUrl || CONFIG.PRODUCTION_WEB_URL;
+        const isProdSession = targetWebUrl.startsWith("https://queueit-one.vercel.app");
+        const primaryApiUrl = isProdSession ? CONFIG.PRODUCTION_API_URL : CONFIG.LOCAL_API_URL;
+        const fallbackApiUrl = isProdSession ? CONFIG.LOCAL_API_URL : CONFIG.PRODUCTION_API_URL;
+
         try {
-            // 1. Check for duplicates in recent queue items (limit 100)
-            const getResponse = await fetch("http://localhost:8000/api/items?limit=100", {
-                method: "GET",
-                headers: {
-                    "Authorization": `Bearer ${token}`
-                }
-            });
+            // 1. Check for duplicates in recent queue items
+            let getResponse;
+            try {
+                getResponse = await fetch(`${primaryApiUrl}?limit=100`, {
+                    method: "GET",
+                    headers: { "Authorization": `Bearer ${token}` }
+                });
+            } catch (err) {
+                getResponse = await fetch(`${fallbackApiUrl}?limit=100`, {
+                    method: "GET",
+                    headers: { "Authorization": `Bearer ${token}` }
+                });
+            }
 
             if (getResponse.status === 401 || getResponse.status === 403) {
-                chrome.storage.local.remove(['authToken'], async () => {
+                chrome.storage.local.remove(['authToken', 'appUrl'], async () => {
                     if (!isRetry) {
-                        console.log("Token expired/invalid (401/403). Retrying save with refreshed token...");
                         await saveToQueue(url, title, true);
                     } else {
-                        showError("Please login to QueueIt", true);
+                        showError("Please log in to QueueIt first", true, targetWebUrl);
                     }
                 });
                 return;
@@ -291,56 +321,69 @@ document.addEventListener('DOMContentLoaded', async () => {
                     footerActions.classList.remove('hidden');
                     actionBtn.textContent = "Open Item";
                     actionBtn.onclick = () => {
-                        chrome.tabs.create({ url: `http://localhost:3000/?item=${duplicateItem.id}` });
+                        chrome.tabs.create({ url: `${targetWebUrl}/dashboard?item=${duplicateItem.id}` });
                         window.close();
                     };
                     return;
                 }
             }
 
-            // 2. Not duplicate, save to QueueIt
-            const saveResponse = await fetch("http://localhost:8000/api/items", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    url: url,
-                    title: title || undefined
-                })
-            });
+            // 2. Save to QueueIt
+            let saveResponse;
+            let responseData = null;
+
+            try {
+                saveResponse = await fetch(primaryApiUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ url: url, title: title || undefined })
+                });
+            } catch (netErr) {
+                saveResponse = await fetch(fallbackApiUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ url: url, title: title || undefined })
+                });
+            }
 
             if (saveResponse.status === 401 || saveResponse.status === 403) {
-                chrome.storage.local.remove(['authToken'], async () => {
+                chrome.storage.local.remove(['authToken', 'appUrl'], async () => {
                     if (!isRetry) {
-                        console.log("Token expired/invalid (401/403). Retrying save with refreshed token...");
                         await saveToQueue(url, title, true);
                     } else {
-                        showError("Please login to QueueIt", true);
+                        showError("Please log in to QueueIt first", true, targetWebUrl);
                     }
                 });
                 return;
             }
 
+            try { responseData = await saveResponse.json(); } catch (e) {}
+
             if (!saveResponse.ok) {
                 let errMsg = "Failed to save content";
-                try {
-                    const errData = await saveResponse.json();
-                    errMsg = errData.detail || errData.error || errMsg;
-                } catch (e) {}
+                if (responseData) {
+                    errMsg = responseData.detail || responseData.error || responseData.message || errMsg;
+                }
                 throw new Error(errMsg);
             }
 
-            const responseData = await saveResponse.json();
-            
-            const isServerDuplicate = saveResponse.headers.get("X-QueueIt-Duplicate") === "true" || responseData.is_duplicate;
+            const isServerDuplicate = saveResponse.headers.get("X-QueueIt-Duplicate") === "true" || (responseData && responseData.is_duplicate);
             if (isServerDuplicate) {
                 showToast(toastDuplicate);
                 footerActions.classList.remove('hidden');
                 actionBtn.textContent = "Open Item";
                 actionBtn.onclick = () => {
-                    chrome.tabs.create({ url: `http://localhost:3000/?item=${responseData.id}` });
+                    if (responseData && responseData.id) {
+                        chrome.tabs.create({ url: `${targetWebUrl}/dashboard?item=${responseData.id}` });
+                    } else {
+                        chrome.tabs.create({ url: `${targetWebUrl}/dashboard` });
+                    }
                     window.close();
                 };
                 return;
@@ -354,7 +397,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         } catch (error) {
             console.error("Save error:", error);
-            showError(error.message || "Failed to save item");
+            showError(error.message || "Failed to save item", false, targetWebUrl);
         }
     }
 });

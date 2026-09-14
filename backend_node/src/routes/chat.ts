@@ -105,7 +105,7 @@ async function generateGeminiChatStream(
   apiKey: string,
   onChunk: (text: string) => void
 ): Promise<boolean> {
-  const models = ['gemini-2.5-flash', 'gemini-3.6-flash'];
+  const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
 
   for (const model of models) {
     try {

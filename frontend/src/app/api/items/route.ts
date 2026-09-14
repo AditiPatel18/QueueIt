@@ -134,12 +134,11 @@ export async function POST(request: Request) {
     const cleanUrl = rawUrl.trim();
     const itemTitle = body.title?.trim() || cleanUrl;
 
-    // 2. Try proxying to backend service first (Render or configured backend)
+    // 2. Try proxying to backend service first (if configured backend URL is set)
     const candidates = [
       process.env.BACKEND_API_URL,
       process.env.BACKEND_URL,
       process.env.NEXT_PUBLIC_API_URL,
-      "https://queueit-backend-v62p.onrender.com",
       "http://localhost:8001",
     ].filter(Boolean) as string[];
 
