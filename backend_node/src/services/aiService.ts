@@ -527,6 +527,10 @@ export async function determineFolderForItem(
 }
 
 export class AIService {
+  public static async extractYouTubeContent(url: string) {
+    return fetchYouTubeContent(url);
+  }
+
   private static getApiKey(): string | null {
     return process.env.GEMINI_API_KEY || null;
   }

@@ -52,6 +52,16 @@ router.get('/debug-ingestion/:id', async (req: Request, res: Response) => {
   return res.status(404).json({ detail: `No ingestion debug session found for ID ${itemId}` });
 });
 
+router.get('/test-yt-direct', async (req: Request, res: Response) => {
+  const url = (req.query.url as string) || 'https://www.youtube.com/watch?v=SqcY0GlETPk';
+  try {
+    const extracted = await AIService.extractYouTubeContent(url);
+    return res.json({ url, extracted });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
