@@ -179,10 +179,10 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
     }
     const normalized = normalizeUrl(cleanUrl);
 
-    // Duplicate check
+    // Duplicate check using existing url column and application-level normalization
     let existingItem: any = null;
     try {
-      const { data } = await supabase.from('items').select('*').eq('user_id', userId).eq('normalized_url', normalized).maybeSingle();
+      const { data } = await supabase.from('items').select('*').eq('user_id', userId).eq('url', cleanUrl).maybeSingle();
       if (data) existingItem = data;
     } catch {
       /* non-fatal */
@@ -192,10 +192,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
       try {
         const { data: allItems } = await supabase.from('items').select('*').eq('user_id', userId);
         const all = allItems || [];
-        existingItem = all.find((i: any) =>
-          normalizeUrl(i.url || '') === normalized ||
-          (i.normalized_url && normalizeUrl(i.normalized_url) === normalized)
-        ) || null;
+        existingItem = all.find((i: any) => normalizeUrl(i.url || '') === normalized) || null;
       } catch { /* non-fatal */ }
     }
 
@@ -225,7 +222,6 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
     const itemData: Record<string, any> = {
       user_id: userId,
       url: cleanUrl,
-      normalized_url: normalized,
       title: title || cleanUrl,
       content_type: platformInfo.source_type,
       source_name: platformInfo.source_name,
