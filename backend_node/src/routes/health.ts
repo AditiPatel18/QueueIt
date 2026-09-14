@@ -3,7 +3,11 @@ import { Router } from 'express';
 const router = Router();
 
 router.get('/', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({
+    status: 'ok',
+    hasGeminiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()),
+    geminiKeyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 6) + '...' : 'MISSING',
+  });
 });
 
 router.get('/test-yt', async (req, res) => {
