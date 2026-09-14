@@ -73,6 +73,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
       for (const key of publicKeys) {
         if (transcript) break;
         try {
+          console.log(`[AIService] Trying Innertube RPC client=${clientCfg.name} key=${key.substring(0, 8)}... for video ${videoId}`);
           const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
             method: 'POST',
             headers: {
@@ -92,9 +93,11 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
             }),
           });
 
+          console.log(`[AIService] Innertube RPC client=${clientCfg.name} returned HTTP ${playerRes.status}`);
           if (!playerRes.ok) continue;
 
           const playerData: any = await playerRes.json();
+          console.log(`[AIService] playabilityStatus=${playerData?.playabilityStatus?.status}, hasVideoDetails=${Boolean(playerData?.videoDetails)}, hasCaptions=${Boolean(playerData?.captions)}`);
 
           if (playerData?.videoDetails) {
             if (!title && playerData.videoDetails.title) {
@@ -107,6 +110,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
 
           const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
           if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
+            console.log(`[AIService] Found ${captionTracks.length} caption track(s)`);
             const enTrack = captionTracks.find((t: any) =>
               t.languageCode === 'en' ||
               t.vssId?.includes('en') ||
@@ -119,15 +123,21 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
               if (!trackUrl.includes('fmt=')) {
                 trackUrl += '&fmt=srv1';
               }
+              console.log(`[AIService] Fetching caption baseUrl (${enTrack.languageCode}): ${trackUrl.substring(0, 80)}...`);
               const capRes = await fetch(trackUrl, {
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                  'Referer': 'https://www.youtube.com/',
+                  'Origin': 'https://www.youtube.com',
                 },
               });
 
+              console.log(`[AIService] Caption baseUrl HTTP ${capRes.status}`);
               if (capRes.ok) {
                 const rawCap = await capRes.text();
+                console.log(`[AIService] Raw caption text length: ${rawCap.length}`);
                 const cleaned = parseCaptionText(rawCap);
+                console.log(`[AIService] Cleaned caption text length: ${cleaned.length}`);
                 if (cleaned && cleaned.length > 20) {
                   transcript = cleaned;
                   console.log(`[AIService] Succeeded via Innertube RPC (${clientCfg.name}) - ${transcript.length} chars`);
