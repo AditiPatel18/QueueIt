@@ -71,15 +71,30 @@ describe('Collections, Analytics, Chat & Health API Tests', () => {
 
   describe('GET /api/analytics', () => {
     it('should calculate and return user dashboard metrics', async () => {
-      (supabase.from as jest.Mock).mockReturnValueOnce({
-        select: jest.fn().mockReturnThis(),
-        eq: jest.fn().mockResolvedValue({
-          data: [
-            { id: '1', status: 'completed', duration_seconds: 600, content_type: 'youtube' },
-            { id: '2', status: 'unread', estimated_read_time: 5, content_type: 'article' },
-          ],
-          error: null,
-        }),
+      (supabase.from as jest.Mock).mockImplementation((table: string) => {
+        if (table === 'items') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockImplementation((col: string) => {
+              if (col === 'user_id') {
+                const chain: any = Promise.resolve({
+                  data: [
+                    { id: '1', status: 'completed', duration_seconds: 600, content_type: 'youtube' },
+                    { id: '2', status: 'unread', estimated_read_time: 5, content_type: 'article' },
+                  ],
+                  error: null,
+                });
+                chain.limit = jest.fn().mockResolvedValue({ data: [{ user_id: 'test-user-id' }], error: null });
+                return chain;
+              }
+              return Promise.resolve({ data: [], error: null });
+            }),
+          };
+        }
+        return {
+          select: jest.fn().mockReturnThis(),
+          eq: jest.fn().mockResolvedValue({ data: [], error: null }),
+        };
       });
 
       const res = await request(app)

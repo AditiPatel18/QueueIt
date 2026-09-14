@@ -7,7 +7,7 @@ import { resolvePlatformInfo } from '../utils/urlHelper';
 
 dotenv.config();
 
-/** Helper function to extract YouTube metadata, duration, and transcript using direct Innertube Android client RPC */
+/** Helper function to extract YouTube metadata, duration, and transcript using direct Innertube RPC and fallbacks */
 async function fetchYouTubeContent(url: string): Promise<{ transcript: string; title?: string; durationSeconds?: number }> {
   try {
     const vMatch = url.match(/(?:v=|\/embed\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
@@ -27,98 +27,177 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
       'AIzaSyBflxtu4so615_dC_YyH9Z2zL6q9vU2-gA',
     ];
 
+    const clientConfigs = [
+      { name: 'ANDROID', clientName: 'ANDROID', clientVersion: '20.10.38', ua: 'com.google.android.youtube/20.10.38 (Linux; U; Android 11; en_US; Pixel 5 Build/RD1A.201105.003.C1)' },
+      { name: 'IOS', clientName: 'IOS', clientVersion: '19.45.4', ua: 'com.google.ios.youtube/19.45.4 (iPhone14,3; U; CPU iOS 17_5_1 like Mac OS X; en_US)' },
+      { name: 'WEB', clientName: 'WEB', clientVersion: '2.20240308.00.00', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' },
+    ];
+
     console.log(`[AIService] Extracting YouTube metadata & captions for video ID ${videoId}...`);
 
-    // 1. Direct Innertube Android Player RPC (does NOT rely on scraping watch-page HTML)
-    for (const key of publicKeys) {
-      try {
-        const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 11; en_US; Pixel 5 Build/RD1A.201105.003.C1)',
-          },
-          body: JSON.stringify({
-            context: {
-              client: {
-                clientName: 'ANDROID',
-                clientVersion: '20.10.38',
-                hl: 'en',
-                gl: 'US',
-              },
+    // Helper to clean raw caption XML or JSON3 string into plain text with space separators
+    const parseCaptionText = (raw: string): string => {
+      if (!raw || !raw.trim()) return '';
+      const trimmed = raw.trim();
+      if (trimmed.startsWith('{')) {
+        try {
+          const jsonCap = JSON.parse(trimmed);
+          const parts: string[] = [];
+          if (Array.isArray(jsonCap.events)) {
+            for (const ev of jsonCap.events) {
+              if (Array.isArray(ev.segs)) {
+                for (const seg of ev.segs) {
+                  if (seg.utf8) parts.push(seg.utf8);
+                }
+              }
+            }
+          }
+          const parsed = parts.join(' ').replace(/\s+/g, ' ').trim();
+          if (parsed.length > 20) return parsed;
+        } catch { /* fallback to regex */ }
+      }
+      return trimmed
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    // 1. Multi-client Innertube Player RPC
+    for (const clientCfg of clientConfigs) {
+      if (transcript) break;
+      for (const key of publicKeys) {
+        if (transcript) break;
+        try {
+          const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': clientCfg.ua,
             },
-            videoId: videoId,
-          }),
-        });
-
-        if (!playerRes.ok) {
-          console.warn(`[AIService] Innertube player request returned HTTP ${playerRes.status}`);
-          continue;
-        }
-
-        const playerData: any = await playerRes.json();
-
-        // Extract Title and Duration from videoDetails
-        if (playerData?.videoDetails) {
-          if (!title && playerData.videoDetails.title) {
-            title = playerData.videoDetails.title.trim();
-          }
-          if (!durationSeconds && playerData.videoDetails.lengthSeconds) {
-            durationSeconds = parseInt(playerData.videoDetails.lengthSeconds, 10) || 0;
-          }
-        }
-
-        // Extract and resolve Caption Tracks
-        const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
-          console.log(`[AIService] Found ${captionTracks.length} caption track(s) for video ${videoId}`);
-
-          // Prefer English track if available, else pick primary track
-          const enTrack = captionTracks.find((t: any) =>
-            t.languageCode === 'en' ||
-            t.vssId?.includes('en') ||
-            t.vssId?.includes('.en') ||
-            t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
-          ) || captionTracks[0];
-
-          if (enTrack?.baseUrl) {
-            const capRes = await fetch(enTrack.baseUrl, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            body: JSON.stringify({
+              context: {
+                client: {
+                  clientName: clientCfg.clientName,
+                  clientVersion: clientCfg.clientVersion,
+                  hl: 'en',
+                  gl: 'US',
+                },
               },
-            });
+              videoId: videoId,
+            }),
+          });
 
-            if (capRes.ok) {
-              const capXml = await capRes.text();
-              if (capXml && capXml.length > 0) {
-                transcript = capXml
-                  .replace(/<text[^>]*>/g, ' ')
-                  .replace(/<\/text>/g, ' ')
-                  .replace(/<[^>]+>/g, '')
-                  .replace(/&amp;/g, '&')
-                  .replace(/&lt;/g, '<')
-                  .replace(/&gt;/g, '>')
-                  .replace(/&#39;/g, "'")
-                  .replace(/&quot;/g, '"')
-                  .replace(/\s+/g, ' ')
-                  .trim();
+          if (!playerRes.ok) continue;
 
-                console.log(`[AIService] Successfully extracted caption text (${transcript.length} chars, track: ${enTrack.languageCode || 'unknown'}) for video ${videoId}`);
+          const playerData: any = await playerRes.json();
+
+          if (playerData?.videoDetails) {
+            if (!title && playerData.videoDetails.title) {
+              title = playerData.videoDetails.title.trim();
+            }
+            if (!durationSeconds && playerData.videoDetails.lengthSeconds) {
+              durationSeconds = parseInt(playerData.videoDetails.lengthSeconds, 10) || 0;
+            }
+          }
+
+          const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+          if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
+            const enTrack = captionTracks.find((t: any) =>
+              t.languageCode === 'en' ||
+              t.vssId?.includes('en') ||
+              t.vssId?.includes('.en') ||
+              t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
+            ) || captionTracks[0];
+
+            if (enTrack?.baseUrl) {
+              let trackUrl = enTrack.baseUrl;
+              if (!trackUrl.includes('fmt=')) {
+                trackUrl += '&fmt=srv1';
+              }
+              const capRes = await fetch(trackUrl, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                },
+              });
+
+              if (capRes.ok) {
+                const rawCap = await capRes.text();
+                const cleaned = parseCaptionText(rawCap);
+                if (cleaned && cleaned.length > 20) {
+                  transcript = cleaned;
+                  console.log(`[AIService] Succeeded via Innertube RPC (${clientCfg.name}) - ${transcript.length} chars`);
+                }
+              }
+            }
+          }
+        } catch (keyErr: any) {
+          console.warn(`[AIService] Innertube RPC warning (${clientCfg.name}):`, keyErr?.message || keyErr);
+        }
+      }
+    }
+
+    // 2. Fallback: Direct Timedtext API endpoint search
+    if (!transcript) {
+      console.log(`[AIService] Attempting direct timedtext API fallback for video ${videoId}...`);
+      const timedTextUrls = [
+        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv1`,
+        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&kind=asr&fmt=srv1`,
+        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=hi&fmt=srv1`,
+        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=hi&kind=asr&fmt=srv1`,
+      ];
+
+      for (const ttUrl of timedTextUrls) {
+        try {
+          const res = await fetch(ttUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            },
+          });
+          if (res.ok) {
+            const raw = await res.text();
+            const cleaned = parseCaptionText(raw);
+            if (cleaned && cleaned.length > 20) {
+              transcript = cleaned;
+              console.log(`[AIService] Succeeded via direct timedtext endpoint (${transcript.length} chars)`);
+              break;
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    // 3. Fallback: Timedtext track list query
+    if (!transcript) {
+      try {
+        const listRes = await fetch(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`);
+        if (listRes.ok) {
+          const xml = await listRes.text();
+          const trackMatches = xml.match(/lang_code="([^"]+)"/g);
+          if (trackMatches) {
+            const langCodes = trackMatches.map(m => m.split('"')[1]);
+            const preferredLang = langCodes.find(l => l.startsWith('en')) || langCodes[0];
+            if (preferredLang) {
+              const fetchRes = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=${preferredLang}&fmt=srv1`);
+              if (fetchRes.ok) {
+                const raw = await fetchRes.text();
+                const cleaned = parseCaptionText(raw);
+                if (cleaned && cleaned.length > 20) {
+                  transcript = cleaned;
+                  console.log(`[AIService] Succeeded via timedtext track list (${transcript.length} chars)`);
+                }
               }
             }
           }
         }
-
-        // If title or transcript was resolved, stop iterating keys
-        if (title || transcript) {
-          break;
-        }
-      } catch (keyErr: any) {
-        console.warn(`[AIService] Innertube Android player attempt warning:`, keyErr?.message || keyErr);
-      }
+      } catch { /* non-fatal */ }
     }
 
-    // 2. Fallback: If title or transcript is still missing, attempt secondary watch page HTML scrape
+    // 4. Fallback: Secondary watch page HTML scrape
     if (!transcript || !title) {
       try {
         const res = await fetch(url, {
@@ -150,31 +229,29 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
           }
 
           if (!transcript) {
-            const captionMatch = html.match(/"captionTracks":\s*(\[.*?\])/);
-            if (captionMatch) {
-              const tracks = JSON.parse(captionMatch[1]);
-              const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
-              if (enTrack?.baseUrl) {
-                const capRes = await fetch(enTrack.baseUrl, {
-                  headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-                  },
-                });
-                const capXml = await capRes.text();
-                if (capXml && capXml.length > 0) {
-                  transcript = capXml
-                    .replace(/<text[^>]*>/g, ' ')
-                    .replace(/<\/text>/g, ' ')
-                    .replace(/<[^>]+>/g, '')
-                    .replace(/&amp;/g, '&')
-                    .replace(/&lt;/g, '<')
-                    .replace(/&gt;/g, '>')
-                    .replace(/&#39;/g, "'")
-                    .replace(/&quot;/g, '"')
-                    .replace(/\s+/g, ' ')
-                    .trim();
+            const playerRespMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.*?});/);
+            if (playerRespMatch) {
+              try {
+                const pr = JSON.parse(playerRespMatch[1]);
+                const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+                if (tracks && tracks[0]?.baseUrl) {
+                  let bUrl = tracks[0].baseUrl;
+                  if (!bUrl.includes('fmt=')) bUrl += '&fmt=srv1';
+                  const capRes = await fetch(bUrl, {
+                    headers: {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                      'Referer': `https://www.youtube.com/watch?v=${videoId}`,
+                    },
+                  });
+                  if (capRes.ok) {
+                    const rawCap = await capRes.text();
+                    const cleaned = parseCaptionText(rawCap);
+                    if (cleaned && cleaned.length > 20) {
+                      transcript = cleaned;
+                    }
+                  }
                 }
-              }
+              } catch { /* non-fatal */ }
             }
           }
         }
