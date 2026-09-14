@@ -106,20 +106,7 @@ export async function POST(request: Request) {
     }
 
     const user = userData.user;
-    const ACCOUNT_ALIAS_MAP: Record<string, string> = {
-      "87975154-d112-4aeb-96e4-b6a9e120e9dc": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
-      "a63fddcf-4dee-47be-b1a3-6fcf956ed3a5": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
-    };
-    const EMAIL_ALIAS_MAP: Record<string, string> = {
-      "aditi18407@gmail.com": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
-      "aditipatel18407@gmail.com": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
-      "adipatel18407@gmail.com": "dd669cb6-bbda-4e22-92b6-0f723849a1af",
-    };
-
-    const targetUserId =
-      ACCOUNT_ALIAS_MAP[user.id] ||
-      (user.email && EMAIL_ALIAS_MAP[user.email.toLowerCase().trim()]) ||
-      user.id;
+    const targetUserId = user.id;
 
     const body = await request.json().catch(() => ({}));
     const rawUrl = body.url;
@@ -158,7 +145,6 @@ export async function POST(request: Request) {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${token}`,
-            "X-Authenticated-User-Id": targetUserId,
           },
           body: JSON.stringify({
             url: cleanUrl,
