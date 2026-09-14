@@ -99,18 +99,30 @@ export async function dispatchAndUpdate(
       console.log(`[Worker] ✅ Reminder ${remId} successfully sent to user ${userId}`);
       return true;
     } else {
-      const newRetry = retryCount + 1;
+      const isPermanentRestriction = errorMsg.includes('[Permanent Restriction]') || 
+                                     errorMsg.toLowerCase().includes('testing emails') ||
+                                     errorMsg.toLowerCase().includes('only send testing emails');
+
+      const newRetry = isPermanentRestriction ? MAX_RETRY_COUNT : retryCount + 1;
       const sentinel = errorMsg.includes('[Email Sent]') ? '[Email Sent] ' : '';
       const logEntry = `${nowStr}: ${sentinel}Attempt ${newRetry} failed: ${displayMsg || errorMsg}`;
       logs.push(logEntry);
 
-      const cleanError = 'Unable to send email reminder.';
+      const cleanError = isPermanentRestriction
+        ? 'Resend domain restriction: Cannot send email to non-owner recipient on unverified domain.'
+        : 'Unable to send email reminder.';
+
       await dbRun(
         db,
         "UPDATE local_reminder_history SET status = 'failed', retry_count = ?, error_message = ?, delivery_logs = ? WHERE id = ?",
         [newRetry, cleanError, JSON.stringify(logs), remId]
       );
-      console.warn(`[Worker] ⚠️ Reminder ${remId} attempt ${newRetry}/${MAX_RETRY_COUNT} failed. Error: ${displayMsg || errorMsg}`);
+
+      if (isPermanentRestriction) {
+        console.warn(`[Worker] ⚠️ Reminder ${remId} for user ${userId} marked as failed due to Resend unverified domain restriction (no further retries).`);
+      } else {
+        console.warn(`[Worker] ⚠️ Reminder ${remId} attempt ${newRetry}/${MAX_RETRY_COUNT} failed. Error: ${displayMsg || errorMsg}`);
+      }
       return false;
     }
   } catch (err) {

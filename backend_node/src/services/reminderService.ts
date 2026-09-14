@@ -561,8 +561,24 @@ export class ReminderService {
     const tzName = settings.timezone || 'UTC';
     const now = new Date();
 
-    const localTimeStr = now.toLocaleTimeString('en-US', { timeZone: tzName, hour12: false });
-    const [localHour, localMin] = localTimeStr.split(':').map(Number);
+    let localHour = 0;
+    let localMin = 0;
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: tzName,
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false,
+      });
+      const parts = formatter.formatToParts(now);
+      for (const part of parts) {
+        if (part.type === 'hour') localHour = parseInt(part.value, 10) % 24;
+        if (part.type === 'minute') localMin = parseInt(part.value, 10);
+      }
+    } catch {
+      localHour = now.getUTCHours();
+      localMin = now.getUTCMinutes();
+    }
 
     const todayDateStr = getLocalDateStr(tzName, now);
 
@@ -669,17 +685,24 @@ export class ReminderService {
     const dbSave = openDb();
     try {
       if (topItem.id && !forceTimeCheck) {
-        // Duplicate guard: only block if an active/sent reminder for this item already exists TODAY
-        const duplicate = await dbGet<any>(
+        // Duplicate guard: only block if an active/sent reminder for this item already exists on today's local date in user's timezone
+        const existingHistory = await dbAll<any>(
           dbSave,
-          `SELECT 1 FROM local_reminder_history 
+          `SELECT sent_at FROM local_reminder_history 
            WHERE user_id = ? AND item_id = ? 
-             AND status IN ('pending', 'processing', 'sent', 'delivered', 'opened') 
-             AND date(sent_at) = date('now')`,
+             AND status IN ('pending', 'processing', 'sent', 'delivered', 'opened')`,
           [userId, topItem.id]
         );
+        const duplicate = existingHistory.some((r: any) => {
+          if (!r.sent_at) return false;
+          try {
+            return getLocalDateStr(tzName, new Date(r.sent_at)) === todayDateStr;
+          } catch {
+            return false;
+          }
+        });
         if (duplicate) {
-          console.log(`[Scheduler] Duplicate active reminder exists for item ${topItem.id} today — skipping.`);
+          console.log(`[Scheduler] Duplicate active reminder exists for item ${topItem.id} on local date ${todayDateStr} (${tzName}) — skipping.`);
           return null;
         }
       }

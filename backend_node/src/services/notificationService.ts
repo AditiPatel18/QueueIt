@@ -66,13 +66,36 @@ export class NotificationService {
 
             const errorMsg = error ? (typeof error === 'object' && error !== null ? ((error as any).message || JSON.stringify(error)) : String(error)) : 'Unknown Resend error';
             resendErr = `Resend API error (attempt ${attempt}): ${errorMsg}`;
+
+            const isRestrictionError = errorMsg.toLowerCase().includes('testing emails') || 
+                                     errorMsg.toLowerCase().includes('only send testing emails') ||
+                                     (errorMsg.toLowerCase().includes('validation_error') && errorMsg.toLowerCase().includes('email'));
+
+            if (isRestrictionError) {
+              const cleanRestrictionMsg = `[Permanent Restriction] Resend domain restriction: Cannot send email to ${toEmail} (unverified sending domain on Resend free tier).`;
+              console.warn(`[NotificationService] ⚠️ ${cleanRestrictionMsg}`);
+              return [false, cleanRestrictionMsg];
+            }
+
             console.warn(`[NotificationService] ${resendErr}`);
 
             if (attempt < 3) {
               await new Promise(resolve => setTimeout(resolve, 100));
             }
           } catch (err: any) {
-            resendErr = `Resend exception (attempt ${attempt}): ${err?.message || String(err)}`;
+            const excMsg = err?.message || String(err);
+            resendErr = `Resend exception (attempt ${attempt}): ${excMsg}`;
+
+            const isRestrictionError = excMsg.toLowerCase().includes('testing emails') || 
+                                     excMsg.toLowerCase().includes('only send testing emails') ||
+                                     (excMsg.toLowerCase().includes('validation_error') && excMsg.toLowerCase().includes('email'));
+
+            if (isRestrictionError) {
+              const cleanRestrictionMsg = `[Permanent Restriction] Resend domain restriction: Cannot send email to ${toEmail} (unverified sending domain on Resend free tier).`;
+              console.warn(`[NotificationService] ⚠️ ${cleanRestrictionMsg}`);
+              return [false, cleanRestrictionMsg];
+            }
+
             console.warn(`[NotificationService] ${resendErr}`);
             if (attempt < 3) {
               await new Promise(resolve => setTimeout(resolve, 100));

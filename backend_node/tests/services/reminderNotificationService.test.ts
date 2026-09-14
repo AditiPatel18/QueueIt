@@ -95,4 +95,26 @@ describe('Notification Service Unit Tests', () => {
     expect(info).toContain('Resend API error');
     expect(mockSend).toHaveBeenCalledTimes(3);
   });
+
+  it('should handle Resend unverified domain recipient restriction gracefully without looping', async () => {
+    process.env.RESEND_API_KEY = 're_test_key_123';
+    delete process.env.SMTP_HOST;
+
+    mockSend.mockResolvedValueOnce({
+      data: null,
+      error: { message: 'You can only send testing emails to your own email address (test@example.com).' },
+    });
+
+    const service = new NotificationService();
+    const [success, info] = await service.sendEmailAsync(
+      'other_user@example.com',
+      'Test Subject',
+      '<p>Test Body</p>'
+    );
+
+    expect(success).toBe(false);
+    expect(info).toContain('[Permanent Restriction]');
+    expect(info).toContain('unverified sending domain');
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
 });
