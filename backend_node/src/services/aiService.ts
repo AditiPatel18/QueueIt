@@ -23,6 +23,10 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
 
     console.log(`[YouTube Extract] Video ID: ${videoId}`);
 
+    const fetchWithTimeout = async (inputUrl: string, opts: any = {}, timeoutMs: number = 8000) => {
+      return fetch(inputUrl, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
+    };
+
     // Helper to clean raw caption XML or JSON3 string into plain text with space separators
     const parseCaptionText = (raw: string): string => {
       if (!raw || !raw.trim()) return '';
@@ -59,7 +63,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
     try {
       const desktopUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
       const watchUrl = `https://www.youtube.com/watch?v=${videoId}&hl=en`;
-      const watchRes = await fetch(watchUrl, {
+      const watchRes = await fetchWithTimeout(watchUrl, {
         headers: {
           'User-Agent': desktopUa,
           'Accept-Language': 'en-US,en;q=0.9',
@@ -123,7 +127,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
                   bUrl = `https://www.youtube.com${bUrl}`;
                 }
 
-                const capRes = await fetch(bUrl, {
+                const capRes = await fetchWithTimeout(bUrl, {
                   headers: {
                     'User-Agent': desktopUa,
                     'Referer': 'https://www.youtube.com/',
@@ -155,7 +159,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
     if (!transcript) {
       try {
         const mobileUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
-        const mobRes = await fetch(`https://m.youtube.com/watch?v=${videoId}`, {
+        const mobRes = await fetchWithTimeout(`https://m.youtube.com/watch?v=${videoId}`, {
           headers: { 'User-Agent': mobileUa, 'Accept-Language': 'en-US,en;q=0.9' },
         });
 
@@ -188,7 +192,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
                   bUrl = `https://www.youtube.com${bUrl}`;
                 }
 
-                const capRes = await fetch(bUrl, {
+                const capRes = await fetchWithTimeout(bUrl, {
                   headers: { 'User-Agent': mobileUa, 'Referer': `https://m.youtube.com/watch?v=${videoId}` },
                 });
                 console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
@@ -226,7 +230,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
         for (const key of publicKeys) {
           if (transcript) break;
           try {
-            const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
+            const playerRes = await fetchWithTimeout(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -261,7 +265,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
               const selectedLang = preferredTrack.languageCode || preferredTrack.vssId || 'unknown';
               console.log(`[YouTube Extract] Selected track language: ${selectedLang}`);
 
-              const capRes = await fetch(preferredTrack.baseUrl, {
+              const capRes = await fetchWithTimeout(preferredTrack.baseUrl, {
                 headers: { 'User-Agent': clientCfg.ua },
               });
               console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
