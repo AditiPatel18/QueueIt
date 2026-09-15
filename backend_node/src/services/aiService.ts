@@ -79,6 +79,10 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
             headers: {
               'Content-Type': 'application/json',
               'User-Agent': clientCfg.ua,
+              'Origin': 'https://www.youtube.com',
+              'Referer': 'https://www.youtube.com/',
+              'X-YouTube-Client-Name': '1',
+              'X-YouTube-Client-Version': clientCfg.clientVersion,
             },
             body: JSON.stringify({
               context: {
