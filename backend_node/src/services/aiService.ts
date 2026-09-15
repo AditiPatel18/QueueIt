@@ -221,80 +221,91 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
       } catch { /* non-fatal */ }
     }
 
-    // 4. Fallback: Secondary watch page HTML scrape
+    // 4. Fallback: Secondary desktop & mobile watch page HTML scrape
     if (!transcript || !title) {
-      try {
-        const res = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-          },
-        });
-        if (res.ok) {
-          const html = await res.text();
+      const pageUrls = [
+        `https://m.youtube.com/watch?v=${videoId}`,
+        url,
+      ];
 
-          if (!title) {
-            const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
-            if (titleMatch) {
-              title = titleMatch[1].replace(' - YouTube', '').trim();
-            }
-          }
+      for (const pUrl of pageUrls) {
+        if (transcript && title) break;
+        try {
+          const res = await fetch(pUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+          });
+          if (res.ok) {
+            const html = await res.text();
 
-          if (!durationSeconds) {
-            const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                             html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                             html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
-            if (isoMatch) {
-              const hours = parseInt(isoMatch[1] || '0', 10);
-              const mins = parseInt(isoMatch[2] || '0', 10);
-              const secs = parseInt(isoMatch[3] || '0', 10);
-              durationSeconds = hours * 3600 + mins * 60 + secs;
-            }
-          }
-
-          if (!transcript) {
-            const idx = html.indexOf('"captionTracks":');
-            if (idx !== -1) {
-              const startIdx = html.indexOf('[', idx);
-              let depth = 0;
-              let endIdx = -1;
-              for (let i = startIdx; i < html.length; i++) {
-                if (html[i] === '[') depth++;
-                else if (html[i] === ']') depth--;
-                if (depth === 0) { endIdx = i + 1; break; }
+            if (!title) {
+              const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
+              if (titleMatch) {
+                title = titleMatch[1].replace(' - YouTube', '').replace('- YouTube', '').trim();
               }
-              if (endIdx !== -1) {
-                try {
-                  const jsonStr = html.substring(startIdx, endIdx);
-                  const tracks = JSON.parse(jsonStr);
-                  if (Array.isArray(tracks) && tracks.length > 0) {
-                    const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
-                    if (enTrack?.baseUrl) {
-                      let bUrl = enTrack.baseUrl.replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
-                      if (!bUrl.includes('fmt=')) bUrl += '&fmt=srv1';
-                      const capRes = await fetch(bUrl, {
-                        headers: {
-                          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-                          'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-                        },
-                      });
-                      if (capRes.ok) {
-                        const rawCap = await capRes.text();
-                        const cleaned = parseCaptionText(rawCap);
-                        if (cleaned && cleaned.length > 20) {
-                          transcript = cleaned;
-                          console.log(`[AIService] Succeeded via watch page captionTracks JSON (${transcript.length} chars)`);
+            }
+
+            if (!durationSeconds) {
+              const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
+                               html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
+                               html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
+              if (isoMatch) {
+                const hours = parseInt(isoMatch[1] || '0', 10);
+                const mins = parseInt(isoMatch[2] || '0', 10);
+                const secs = parseInt(isoMatch[3] || '0', 10);
+                durationSeconds = hours * 3600 + mins * 60 + secs;
+              }
+            }
+
+            if (!transcript) {
+              const idx = html.indexOf('"captionTracks":');
+              if (idx !== -1) {
+                const startIdx = html.indexOf('[', idx);
+                let depth = 0;
+                let endIdx = -1;
+                for (let i = startIdx; i < html.length; i++) {
+                  if (html[i] === '[') depth++;
+                  else if (html[i] === ']') depth--;
+                  if (depth === 0) { endIdx = i + 1; break; }
+                }
+                if (endIdx !== -1) {
+                  try {
+                    const jsonStr = html.substring(startIdx, endIdx);
+                    const tracks = JSON.parse(jsonStr);
+                    if (Array.isArray(tracks) && tracks.length > 0) {
+                      const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
+                      if (enTrack?.baseUrl) {
+                        let bUrl = enTrack.baseUrl.replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
+                        if (bUrl.startsWith('/')) {
+                          bUrl = `https://www.youtube.com${bUrl}`;
+                        }
+                        const capRes = await fetch(bUrl, {
+                          headers: {
+                            'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
+                            'Referer': pUrl,
+                          },
+                        });
+                        if (capRes.ok) {
+                          const rawCap = await capRes.text();
+                          const cleaned = parseCaptionText(rawCap);
+                          if (cleaned && cleaned.length > 20) {
+                            transcript = cleaned;
+                            console.log(`[AIService] Succeeded via watch page captionTracks JSON (${transcript.length} chars)`);
+                            break;
+                          }
                         }
                       }
                     }
-                  }
-                } catch { /* non-fatal */ }
+                  } catch { /* non-fatal */ }
+                }
               }
             }
           }
+        } catch (htmlErr: any) {
+          console.warn('[AIService] HTML fallback extraction warning:', htmlErr?.message || htmlErr);
         }
-      } catch (htmlErr: any) {
-        console.warn('[AIService] HTML fallback extraction warning:', htmlErr?.message || htmlErr);
       }
     }
 
