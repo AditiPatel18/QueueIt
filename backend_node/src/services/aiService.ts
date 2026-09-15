@@ -33,7 +33,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
       { name: 'WEB', clientName: 'WEB', clientVersion: '2.20240308.00.00', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' },
     ];
 
-    console.log(`[AIService] Extracting YouTube metadata & captions for video ID ${videoId}...`);
+    console.log(`[YouTube Extract] Video ID: ${videoId}`);
 
     // Helper to clean raw caption XML or JSON3 string into plain text with space separators
     const parseCaptionText = (raw: string): string => {
@@ -114,7 +114,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
 
           const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
           if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
-            console.log(`[AIService] Found ${captionTracks.length} caption track(s)`);
+            console.log(`[YouTube Extract] Caption tracks found: ${captionTracks.length}`);
             // Order candidate tracks: preferred English track first, then all remaining tracks
             const orderedTracks = [
               captionTracks.find((t: any) =>
@@ -131,7 +131,8 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
               if (!track?.baseUrl) continue;
 
               const trackUrl = track.baseUrl;
-              console.log(`[AIService] Fetching caption track (${track.languageCode}): ${trackUrl.substring(0, 80)}...`);
+              const selectedLang = track.languageCode || track.vssId || 'unknown';
+              console.log(`[YouTube Extract] Selected track language: ${selectedLang}`);
               const capRes = await fetch(trackUrl, {
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -140,12 +141,16 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
                 },
               });
 
-              console.log(`[AIService] Caption baseUrl HTTP ${capRes.status}`);
+              console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
+              if (capRes.status === 429) {
+                console.warn(`[YouTube Extract] Rate limited (HTTP 429) fetching caption track`);
+                break; // Stop looping tracks if rate limited
+              }
               if (capRes.ok) {
                 const rawCap = await capRes.text();
-                console.log(`[AIService] Raw caption text length: ${rawCap.length}`);
+                console.log(`[YouTube Extract] Caption response byte length: ${rawCap.length}`);
                 const cleaned = parseCaptionText(rawCap);
-                console.log(`[AIService] Cleaned caption text length: ${cleaned.length}`);
+                console.log(`[YouTube Extract] Parsed transcript character count: ${cleaned.length}`);
                 if (cleaned && cleaned.length > 20) {
                   transcript = cleaned;
                   console.log(`[AIService] Succeeded via Innertube RPC (${clientCfg.name}) - ${transcript.length} chars`);
