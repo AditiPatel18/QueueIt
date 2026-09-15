@@ -115,19 +115,23 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
           const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
           if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
             console.log(`[AIService] Found ${captionTracks.length} caption track(s)`);
-            const enTrack = captionTracks.find((t: any) =>
-              t.languageCode === 'en' ||
-              t.vssId?.includes('en') ||
-              t.vssId?.includes('.en') ||
-              t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
-            ) || captionTracks[0];
+            // Order candidate tracks: preferred English track first, then all remaining tracks
+            const orderedTracks = [
+              captionTracks.find((t: any) =>
+                t.languageCode === 'en' ||
+                t.vssId?.includes('en') ||
+                t.vssId?.includes('.en') ||
+                t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
+              ),
+              ...captionTracks,
+            ].filter(Boolean);
 
-            if (enTrack?.baseUrl) {
-              let trackUrl = enTrack.baseUrl;
-              if (!trackUrl.includes('fmt=')) {
-                trackUrl += '&fmt=srv1';
-              }
-              console.log(`[AIService] Fetching caption baseUrl (${enTrack.languageCode}): ${trackUrl.substring(0, 80)}...`);
+            for (const track of orderedTracks) {
+              if (transcript) break;
+              if (!track?.baseUrl) continue;
+
+              const trackUrl = track.baseUrl;
+              console.log(`[AIService] Fetching caption track (${track.languageCode}): ${trackUrl.substring(0, 80)}...`);
               const capRes = await fetch(trackUrl, {
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -145,6 +149,7 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
                 if (cleaned && cleaned.length > 20) {
                   transcript = cleaned;
                   console.log(`[AIService] Succeeded via Innertube RPC (${clientCfg.name}) - ${transcript.length} chars`);
+                  break;
                 }
               }
             }
