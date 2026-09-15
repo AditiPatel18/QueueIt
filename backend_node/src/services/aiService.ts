@@ -68,10 +68,11 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
     };
 
     // 1. Multi-client Innertube Player RPC
+    let isRateLimited = false;
     for (const clientCfg of clientConfigs) {
-      if (transcript) break;
+      if (transcript || isRateLimited) break;
       for (const key of publicKeys) {
-        if (transcript) break;
+        if (transcript || isRateLimited) break;
         try {
           console.log(`[AIService] Trying Innertube RPC client=${clientCfg.name} key=${key.substring(0, 8)}... for video ${videoId}`);
           const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
@@ -115,20 +116,24 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
           const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
           if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
             console.log(`[YouTube Extract] Caption tracks found: ${captionTracks.length}`);
-            // Order candidate tracks: preferred English track first, then all remaining tracks
-            const orderedTracks = [
-              captionTracks.find((t: any) =>
-                t.languageCode === 'en' ||
-                t.vssId?.includes('en') ||
-                t.vssId?.includes('.en') ||
-                t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
-              ),
-              ...captionTracks,
-            ].filter(Boolean);
+            const preferredTrack = captionTracks.find((t: any) =>
+              t.languageCode === 'en' ||
+              t.vssId?.includes('en') ||
+              t.vssId?.includes('.en') ||
+              t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
+            );
 
-            for (const track of orderedTracks) {
-              if (transcript) break;
-              if (!track?.baseUrl) continue;
+            // Deduplicate tracks to prevent repeated requests to same baseUrl
+            const candidateTracks = preferredTrack ? [preferredTrack, ...captionTracks] : captionTracks;
+            const seenUrls = new Set<string>();
+            const uniqueTracks = candidateTracks.filter((t: any) => {
+              if (!t?.baseUrl || seenUrls.has(t.baseUrl)) return false;
+              seenUrls.add(t.baseUrl);
+              return true;
+            });
+
+            for (const track of uniqueTracks) {
+              if (transcript || isRateLimited) break;
 
               const trackUrl = track.baseUrl;
               const selectedLang = track.languageCode || track.vssId || 'unknown';
@@ -144,7 +149,8 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
               console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
               if (capRes.status === 429) {
                 console.warn(`[YouTube Extract] Rate limited (HTTP 429) fetching caption track`);
-                break; // Stop looping tracks if rate limited
+                isRateLimited = true;
+                break;
               }
               if (capRes.ok) {
                 const rawCap = await capRes.text();
