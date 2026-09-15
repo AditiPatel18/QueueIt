@@ -106,4 +106,60 @@ describe('AIService Unit Tests', () => {
       expect(supabase.from).toHaveBeenCalledWith('items');
     });
   });
+
+  describe('extractYouTubeContent caption extraction safety', () => {
+    it('should skip fetching caption URLs containing ip=0.0.0.0 and proceed to fallback strategies', async () => {
+      const videoUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+
+      (global.fetch as jest.Mock).mockImplementation((url: string) => {
+        if (typeof url === 'string' && url.includes('youtubei/v1/player')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({
+              videoDetails: { title: 'Test Video Title', lengthSeconds: '212' },
+              captions: {
+                playerCaptionsTracklistRenderer: {
+                  captionTracks: [
+                    {
+                      baseUrl: 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&ip=0.0.0.0&expire=12345',
+                      languageCode: 'en',
+                    },
+                  ],
+                },
+              },
+            }),
+            text: () => Promise.resolve(''),
+          });
+        }
+
+        if (typeof url === 'string' && url.includes('api/timedtext?v=dQw4w9WgXcQ&lang=en')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: () => Promise.resolve('<transcript><text start="0" dur="2">Hello world from direct timedtext fallback transcript</text></transcript>'),
+          });
+        }
+
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          text: () => Promise.resolve(''),
+        });
+      });
+
+      const res = await AIService.extractYouTubeContent(videoUrl);
+
+      // Verify that fetch was never called with ip=0.0.0.0
+      const fetchCalls = (global.fetch as jest.Mock).mock.calls;
+      const fetchedIpUrl = fetchCalls.some(call => typeof call[0] === 'string' && call[0].includes('ip=0.0.0.0'));
+      expect(fetchedIpUrl).toBe(false);
+
+      // Verify that transcript was extracted from the fallback
+      expect(res.transcript).toContain('Hello world from direct timedtext fallback transcript');
+      expect(res.title).toBe('Test Video Title');
+      expect(res.durationSeconds).toBe(212);
+    });
+  });
 });
+
