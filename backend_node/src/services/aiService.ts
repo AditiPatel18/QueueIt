@@ -598,7 +598,7 @@ export class AIService {
     if (!apiKey) {
       console.warn('[AIService] GEMINI_API_KEY is missing. Using fallback summary.');
       return {
-        summary: isYouTube ? 'Transcript unavailable' : `${title || 'Content'} details the core algorithms, implementation steps, and analytical concepts provided in the source material, providing immediate technical context and conclusions.`,
+        summary: (!snippet || !snippet.trim()) ? 'Transcript unavailable' : `${title || 'Content'} details the core algorithms, implementation steps, and analytical concepts provided in the source material, providing immediate technical context and conclusions.`,
         tags: [contentType || 'article', 'general'],
         priority: 50,
       };
@@ -652,10 +652,13 @@ CRITICAL SUMMARIZATION RULES:
         const data: any = await res.json();
         const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
         if (rawText && rawText.trim()) {
-          const cleaned = cleanSummaryText(rawText);
+          let cleaned = cleanSummaryText(rawText);
 
           // Ensure generated summary is complete and has reasonable length
-          if (cleaned.length > 30 && ['.', '!', '?'].includes(cleaned.slice(-1))) {
+          if (cleaned.length > 20) {
+            if (!['.', '!', '?'].includes(cleaned.slice(-1))) {
+              cleaned += '.';
+            }
             const tags = [platform.source_type || 'article', 'general'];
             if (
               title.toLowerCase().includes('code') ||
@@ -680,8 +683,8 @@ CRITICAL SUMMARIZATION RULES:
     }
 
     // High quality fallback if API calls fail or return incomplete outputs
-    const fallbackText = isYouTube
-      ? 'Transcript unavailable'
+    const fallbackText = (!snippet || !snippet.trim())
+      ? (isYouTube ? 'Transcript unavailable' : 'Content unavailable')
       : `${title || 'Content'} details the core algorithms, implementation steps, and analytical concepts provided in the source material, providing immediate technical context and conclusions.`;
     return {
       summary: fallbackText,
