@@ -720,8 +720,8 @@ CRITICAL SUMMARIZATION RULES:
       const isYouTube = platformInfo.source_type === 'youtube' || url.includes('youtube.com') || url.includes('youtu.be');
       let ytDurationSeconds = 0;
 
-      // Step 1: If YouTube URL, extract real video metadata & duration
-      if (isYouTube) {
+      // Step 1: If YouTube URL and no existing transcript, extract real video metadata & duration
+      if (isYouTube && (!snippet || !snippet.trim())) {
         console.log(`[PIPELINE LOG] [AI Service] Extracting YouTube video metadata & duration for ${url}...`);
         const extracted = await fetchYouTubeContent(url);
         if (extracted.durationSeconds && extracted.durationSeconds > 0) {

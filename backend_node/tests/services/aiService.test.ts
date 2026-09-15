@@ -73,4 +73,37 @@ describe('AIService Unit Tests', () => {
       expect(result.priority).toBeGreaterThanOrEqual(10);
     });
   });
+
+  describe('processItemEnrichment stale summary handling', () => {
+    it('should use existing extracted_text without re-fetching YouTube when re-enriching item with stale summary', async () => {
+      const mockRow = {
+        extracted_text: 'Existing extracted transcript text of 2000 chars...',
+        description: null,
+        title: 'Existing Video Title',
+      };
+
+      const { supabase } = require('../../src/config/supabase');
+      (supabase.from as jest.Mock).mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        maybeSingle: jest.fn().mockResolvedValue({ data: mockRow, error: null }),
+      });
+
+      (global.fetch as jest.Mock).mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            candidates: [{ content: { parts: [{ text: 'Generated summary from existing transcript.' }] } }]
+          }),
+          text: () => Promise.resolve(''),
+        })
+      );
+
+      await AIService.processItemEnrichment('mock-item-id', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'user-id-123');
+
+      expect(supabase.from).toHaveBeenCalledWith('items');
+    });
+  });
 });

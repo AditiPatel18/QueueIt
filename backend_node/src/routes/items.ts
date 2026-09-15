@@ -305,6 +305,13 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
     }
 
     if (existingItem) {
+      const hasExtractedText = Boolean(existingItem.extracted_text && String(existingItem.extracted_text).trim().length > 0);
+      const isStaleSummary = existingItem.ai_summary === 'Transcript unavailable' || existingItem.ai_summary === 'Summary unavailable';
+
+      if (hasExtractedText && isStaleSummary) {
+        runMockEnrichmentPipeline(existingItem.id, cleanUrl, userId, existingItem.title || title || null).catch(() => {});
+      }
+
       const merged = await fallbackDb.mergeSingleItemMetadata(userId, existingItem);
       const resp = itemToResponse(merged);
       return res.status(200).set('X-QueueIt-Duplicate', 'true').json({ ...resp, is_duplicate: true });
