@@ -62,6 +62,104 @@ router.get('/test-yt-direct', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/debug-yt', async (req: Request, res: Response) => {
+  const videoId = (req.query.v as string) || 'aircAruvnKk';
+  const logs: string[] = [];
+
+  const publicKeys = [
+    'AIzaSyAO_FJ2SlqU8Q4STEihQIxomIq_S9waxqY',
+    'AIzaSyC1xlsmZOMtvD_3epXvIqf4gE3b-t9R_2E',
+    'AIzaSyBflxtu4so615_dC_YyH9Z2zL6q9vU2-gA',
+  ];
+
+  const clientConfigs = [
+    { name: 'ANDROID', clientName: 'ANDROID', clientVersion: '20.10.38', ua: 'com.google.android.youtube/20.10.38 (Linux; U; Android 11; en_US; Pixel 5 Build/RD1A.201105.003.C1)' },
+    { name: 'IOS', clientName: 'IOS', clientVersion: '19.45.4', ua: 'com.google.ios.youtube/19.45.4 (iPhone14,3; U; CPU iOS 17_5_1 like Mac OS X; en_US)' },
+    { name: 'WEB', clientName: 'WEB', clientVersion: '2.20240308.00.00', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' },
+  ];
+
+  const results: any = {};
+
+  for (const clientCfg of clientConfigs) {
+    for (const key of publicKeys) {
+      try {
+        const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': clientCfg.ua,
+            'Origin': 'https://www.youtube.com',
+            'Referer': 'https://www.youtube.com/',
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': clientCfg.clientVersion,
+          },
+          body: JSON.stringify({
+            context: { client: { clientName: clientCfg.clientName, clientVersion: clientCfg.clientVersion, hl: 'en', gl: 'US' } },
+            videoId: videoId,
+          }),
+        });
+
+        const status = playerRes.status;
+        if (!playerRes.ok) {
+          results[`${clientCfg.name}_${key.substring(0, 6)}`] = { httpStatus: status };
+          continue;
+        }
+
+        const data: any = await playerRes.json();
+        const playability = data?.playabilityStatus?.status;
+        const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+
+        let sampleCaptionHttp = null;
+        let sampleCaptionLen = 0;
+        if (tracks.length > 0 && tracks[0].baseUrl) {
+          const capRes = await fetch(tracks[0].baseUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+              'Referer': 'https://www.youtube.com/',
+              'Origin': 'https://www.youtube.com',
+            },
+          });
+          sampleCaptionHttp = capRes.status;
+          if (capRes.ok) {
+            const txt = await capRes.text();
+            sampleCaptionLen = txt.length;
+          }
+        }
+
+        results[`${clientCfg.name}_${key.substring(0, 6)}`] = {
+          httpStatus: status,
+          playability,
+          captionTracksCount: tracks.length,
+          firstTrackLang: tracks[0]?.languageCode,
+          sampleCaptionHttp,
+          sampleCaptionLen,
+        };
+
+        if (sampleCaptionLen > 50) break;
+      } catch (e: any) {
+        results[`${clientCfg.name}_${key.substring(0, 6)}`] = { error: e?.message };
+      }
+    }
+  }
+
+  // Also test Nocookie embed fallback
+  try {
+    const embedRes = await fetch(`https://www.youtube-nocookie.com/embed/${videoId}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' },
+    });
+    const html = await embedRes.text();
+    const idx = html.indexOf('"captionTracks":');
+    results['NocookieEmbed'] = {
+      httpStatus: embedRes.status,
+      hasCaptionTracks: idx !== -1,
+    };
+  } catch (e: any) {
+    results['NocookieEmbed'] = { error: e?.message };
+  }
+
+  return res.json({ videoId, results });
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
