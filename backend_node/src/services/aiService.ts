@@ -7,7 +7,7 @@ import { resolvePlatformInfo } from '../utils/urlHelper';
 
 dotenv.config();
 
-/** Helper function to extract YouTube metadata, duration, and transcript using direct Innertube RPC and fallbacks */
+/** Helper function to extract YouTube metadata, duration, and transcript using direct watch page, Innertube RPC, and fallbacks */
 async function fetchYouTubeContent(url: string): Promise<{ transcript: string; title?: string; durationSeconds?: number }> {
   try {
     const vMatch = url.match(/(?:v=|\/embed\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
@@ -20,18 +20,6 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
     let title = '';
     let durationSeconds = 0;
     let transcript = '';
-
-    const publicKeys = [
-      'AIzaSyAO_FJ2SlqU8Q4STEihQIxomIq_S9waxqY',
-      'AIzaSyC1xlsmZOMtvD_3epXvIqf4gE3b-t9R_2E',
-      'AIzaSyBflxtu4so615_dC_YyH9Z2zL6q9vU2-gA',
-    ];
-
-    const clientConfigs = [
-      { name: 'ANDROID', clientName: 'ANDROID', clientNumber: '3', clientVersion: '20.10.38', ua: 'com.google.android.youtube/20.10.38 (Linux; U; Android 11; en_US; Pixel 5 Build/RD1A.201105.003.C1)' },
-      { name: 'IOS', clientName: 'IOS', clientNumber: '2', clientVersion: '19.45.4', ua: 'com.google.ios.youtube/19.45.4 (iPhone14,3; U; CPU iOS 17_5_1 like Mac OS X; en_US)' },
-      { name: 'WEB', clientName: 'WEB', clientNumber: '1', clientVersion: '2.20240308.00.00', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' },
-    ];
 
     console.log(`[YouTube Extract] Video ID: ${videoId}`);
 
@@ -67,91 +55,216 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
         .trim();
     };
 
-    // 1. Multi-client Innertube Player RPC
-    let isRateLimited = false;
-    for (const clientCfg of clientConfigs) {
-      if (transcript || isRateLimited) break;
-      for (const key of publicKeys) {
-        if (transcript || isRateLimited) break;
-        try {
-          console.log(`[AIService] Trying Innertube RPC client=${clientCfg.name} key=${key.substring(0, 8)}... for video ${videoId}`);
-          const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': clientCfg.ua,
-              'Origin': 'https://www.youtube.com',
-              'Referer': 'https://www.youtube.com/',
-              'X-YouTube-Client-Name': clientCfg.clientNumber,
-              'X-YouTube-Client-Version': clientCfg.clientVersion,
-            },
-            body: JSON.stringify({
-              context: {
-                client: {
-                  clientName: clientCfg.clientName,
-                  clientVersion: clientCfg.clientVersion,
-                  hl: 'en',
-                  gl: 'US',
-                },
-              },
-              videoId: videoId,
-            }),
-          });
+    // 1. Primary Strategy: Desktop Watch Page ytInitialPlayerResponse & Cookie session
+    try {
+      const desktopUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+      const watchUrl = `https://www.youtube.com/watch?v=${videoId}&hl=en`;
+      const watchRes = await fetch(watchUrl, {
+        headers: {
+          'User-Agent': desktopUa,
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
 
-          console.log(`[AIService] Innertube RPC client=${clientCfg.name} returned HTTP ${playerRes.status}`);
-          if (!playerRes.ok) continue;
+      if (watchRes.ok) {
+        const setCookies = watchRes.headers.getSetCookie ? watchRes.headers.getSetCookie() : [];
+        const cookieStr = setCookies.map(c => c.split(';')[0]).join('; ');
+        const html = await watchRes.text();
 
-          const playerData: any = await playerRes.json();
-          console.log(`[AIService] playabilityStatus=${playerData?.playabilityStatus?.status}, hasVideoDetails=${Boolean(playerData?.videoDetails)}, hasCaptions=${Boolean(playerData?.captions)}`);
+        // Extract title & duration if available
+        const tMatch = html.match(/<title>(.*?)<\/title>/i);
+        if (tMatch && tMatch[1]) {
+          title = tMatch[1].replace(/ - YouTube$/i, '').trim();
+        }
 
-          if (playerData?.videoDetails) {
-            if (!title && playerData.videoDetails.title) {
-              title = playerData.videoDetails.title.trim();
+        const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
+                         html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
+        if (isoMatch) {
+          const hours = parseInt(isoMatch[1] || '0', 10);
+          const mins = parseInt(isoMatch[2] || '0', 10);
+          const secs = parseInt(isoMatch[3] || '0', 10);
+          durationSeconds = hours * 3600 + mins * 60 + secs;
+        }
+
+        const idx = html.indexOf('ytInitialPlayerResponse');
+        if (idx !== -1) {
+          const start = html.indexOf('{', idx);
+          let depth = 0; let end = -1;
+          for (let i = start; i < html.length; i++) {
+            if (html[i] === '{') depth++;
+            else if (html[i] === '}') depth--;
+            if (depth === 0) { end = i + 1; break; }
+          }
+          if (end !== -1) {
+            try {
+              const playerObj = JSON.parse(html.substring(start, end));
+              if (playerObj?.videoDetails) {
+                if (!title && playerObj.videoDetails.title) title = playerObj.videoDetails.title.trim();
+                if (!durationSeconds && playerObj.videoDetails.lengthSeconds) {
+                  durationSeconds = parseInt(playerObj.videoDetails.lengthSeconds, 10) || 0;
+                }
+              }
+
+              const tracks = playerObj?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+              if (tracks && Array.isArray(tracks) && tracks.length > 0) {
+                console.log(`[YouTube Extract] Caption tracks found: ${tracks.length}`);
+                const preferredTrack = tracks.find((t: any) =>
+                  t.languageCode === 'en' ||
+                  t.vssId?.includes('en') ||
+                  t.vssId?.includes('.en') ||
+                  t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
+                ) || tracks[0];
+
+                const selectedLang = preferredTrack.languageCode || preferredTrack.vssId || 'unknown';
+                console.log(`[YouTube Extract] Selected track language: ${selectedLang}`);
+
+                let bUrl = preferredTrack.baseUrl.replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
+                if (bUrl.startsWith('/')) {
+                  bUrl = `https://www.youtube.com${bUrl}`;
+                }
+
+                const capRes = await fetch(bUrl, {
+                  headers: {
+                    'User-Agent': desktopUa,
+                    'Referer': 'https://www.youtube.com/',
+                    'Origin': 'https://www.youtube.com',
+                    ...(cookieStr ? { Cookie: cookieStr } : {}),
+                  },
+                });
+
+                console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
+                if (capRes.ok) {
+                  const rawCap = await capRes.text();
+                  console.log(`[YouTube Extract] Caption response byte length: ${rawCap.length}`);
+                  const cleaned = parseCaptionText(rawCap);
+                  console.log(`[YouTube Extract] Parsed transcript character count: ${cleaned.length}`);
+                  if (cleaned && cleaned.length > 20) {
+                    transcript = cleaned;
+                  }
+                }
+              }
+            } catch { /* non-fatal json parse */ }
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('[YouTube Extract] Desktop watch page extraction error:', e?.message);
+    }
+
+    // 2. Fallback Strategy: Mobile Watch Page
+    if (!transcript) {
+      try {
+        const mobileUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+        const mobRes = await fetch(`https://m.youtube.com/watch?v=${videoId}`, {
+          headers: { 'User-Agent': mobileUa, 'Accept-Language': 'en-US,en;q=0.9' },
+        });
+
+        if (mobRes.ok) {
+          const html = await mobRes.text();
+          const idx = html.indexOf('"captionTracks":');
+          if (idx !== -1) {
+            const startIdx = html.indexOf('[', idx);
+            let depth = 0; let endIdx = -1;
+            for (let i = startIdx; i < html.length; i++) {
+              if (html[i] === '[') depth++;
+              else if (html[i] === ']') depth--;
+              if (depth === 0) { endIdx = i + 1; break; }
             }
-            if (!durationSeconds && playerData.videoDetails.lengthSeconds) {
-              durationSeconds = parseInt(playerData.videoDetails.lengthSeconds, 10) || 0;
+            if (endIdx !== -1) {
+              const tracks = JSON.parse(html.substring(startIdx, endIdx));
+              if (Array.isArray(tracks) && tracks.length > 0) {
+                console.log(`[YouTube Extract] Caption tracks found: ${tracks.length}`);
+                const preferredTrack = tracks.find((t: any) =>
+                  t.languageCode === 'en' ||
+                  t.vssId?.includes('en') ||
+                  t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
+                ) || tracks[0];
+
+                const selectedLang = preferredTrack.languageCode || preferredTrack.vssId || 'unknown';
+                console.log(`[YouTube Extract] Selected track language: ${selectedLang}`);
+
+                let bUrl = preferredTrack.baseUrl.replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
+                if (bUrl.startsWith('/')) {
+                  bUrl = `https://www.youtube.com${bUrl}`;
+                }
+
+                const capRes = await fetch(bUrl, {
+                  headers: { 'User-Agent': mobileUa, 'Referer': `https://m.youtube.com/watch?v=${videoId}` },
+                });
+                console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
+                if (capRes.ok) {
+                  const rawCap = await capRes.text();
+                  console.log(`[YouTube Extract] Caption response byte length: ${rawCap.length}`);
+                  const cleaned = parseCaptionText(rawCap);
+                  console.log(`[YouTube Extract] Parsed transcript character count: ${cleaned.length}`);
+                  if (cleaned && cleaned.length > 20) {
+                    transcript = cleaned;
+                  }
+                }
+              }
             }
           }
+        }
+      } catch (mobErr: any) {
+        console.warn('[YouTube Extract] Mobile watch page extraction error:', mobErr?.message);
+      }
+    }
 
-          const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-          if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
-            console.log(`[YouTube Extract] Caption tracks found: ${captionTracks.length}`);
-            const preferredTrack = captionTracks.find((t: any) =>
-              t.languageCode === 'en' ||
-              t.vssId?.includes('en') ||
-              t.vssId?.includes('.en') ||
-              t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
-            );
+    // 3. Fallback Strategy: Innertube Player RPC
+    if (!transcript) {
+      const publicKeys = [
+        'AIzaSyAO_FJ2SlqU8Q4STEihQIxomIq_S9waxqY',
+        'AIzaSyC1xlsmZOMtvD_3epXvIqf4gE3b-t9R_2E',
+      ];
+      const clientConfigs = [
+        { name: 'ANDROID', clientName: 'ANDROID', clientNumber: '3', clientVersion: '20.10.38', ua: 'com.google.android.youtube/20.10.38 (Linux; U; Android 11; en_US; Pixel 5 Build/RD1A.201105.003.C1)' },
+        { name: 'WEB', clientName: 'WEB', clientNumber: '1', clientVersion: '2.20240308.00.00', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' },
+      ];
 
-            // Deduplicate tracks to prevent repeated requests to same baseUrl
-            const candidateTracks = preferredTrack ? [preferredTrack, ...captionTracks] : captionTracks;
-            const seenUrls = new Set<string>();
-            const uniqueTracks = candidateTracks.filter((t: any) => {
-              if (!t?.baseUrl || seenUrls.has(t.baseUrl)) return false;
-              seenUrls.add(t.baseUrl);
-              return true;
+      for (const clientCfg of clientConfigs) {
+        if (transcript) break;
+        for (const key of publicKeys) {
+          if (transcript) break;
+          try {
+            const playerRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': clientCfg.ua,
+                'X-YouTube-Client-Name': clientCfg.clientNumber,
+                'X-YouTube-Client-Version': clientCfg.clientVersion,
+              },
+              body: JSON.stringify({
+                context: { client: { clientName: clientCfg.clientName, clientVersion: clientCfg.clientVersion, hl: 'en', gl: 'US' } },
+                videoId: videoId,
+              }),
             });
 
-            for (const track of uniqueTracks) {
-              if (transcript || isRateLimited) break;
-
-              const trackUrl = track.baseUrl;
-              const selectedLang = track.languageCode || track.vssId || 'unknown';
-              console.log(`[YouTube Extract] Selected track language: ${selectedLang}`);
-              const capRes = await fetch(trackUrl, {
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-                  'Referer': 'https://www.youtube.com/',
-                  'Origin': 'https://www.youtube.com',
-                },
-              });
-
-              console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
-              if (capRes.status === 429) {
-                console.warn(`[YouTube Extract] Rate limited (HTTP 429) fetching caption track`);
-                isRateLimited = true;
-                break;
+            if (!playerRes.ok) continue;
+            const playerData: any = await playerRes.json();
+            if (playerData?.videoDetails) {
+              if (!title && playerData.videoDetails.title) title = playerData.videoDetails.title.trim();
+              if (!durationSeconds && playerData.videoDetails.lengthSeconds) {
+                durationSeconds = parseInt(playerData.videoDetails.lengthSeconds, 10) || 0;
               }
+            }
+
+            const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+            if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
+              console.log(`[YouTube Extract] Caption tracks found: ${captionTracks.length}`);
+              const preferredTrack = captionTracks.find((t: any) =>
+                t.languageCode === 'en' ||
+                t.vssId?.includes('en') ||
+                t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
+              ) || captionTracks[0];
+
+              const selectedLang = preferredTrack.languageCode || preferredTrack.vssId || 'unknown';
+              console.log(`[YouTube Extract] Selected track language: ${selectedLang}`);
+
+              const capRes = await fetch(preferredTrack.baseUrl, {
+                headers: { 'User-Agent': clientCfg.ua },
+              });
+              console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
               if (capRes.ok) {
                 const rawCap = await capRes.text();
                 console.log(`[YouTube Extract] Caption response byte length: ${rawCap.length}`);
@@ -159,41 +272,31 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
                 console.log(`[YouTube Extract] Parsed transcript character count: ${cleaned.length}`);
                 if (cleaned && cleaned.length > 20) {
                   transcript = cleaned;
-                  console.log(`[AIService] Succeeded via Innertube RPC (${clientCfg.name}) - ${transcript.length} chars`);
-                  break;
                 }
               }
             }
-          }
-        } catch (keyErr: any) {
-          console.warn(`[AIService] Innertube RPC warning (${clientCfg.name}):`, keyErr?.message || keyErr);
+          } catch { /* non-fatal */ }
         }
       }
     }
 
-    // 2. Fallback: Direct Timedtext API endpoint search
+    // 4. Fallback Strategy: Direct Timedtext Endpoint
     if (!transcript) {
-      console.log(`[AIService] Attempting direct timedtext API fallback for video ${videoId}...`);
-      const timedTextUrls = [
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv1`,
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&kind=asr&fmt=srv1`,
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=hi&fmt=srv1`,
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=hi&kind=asr&fmt=srv1`,
-      ];
-
-      for (const ttUrl of timedTextUrls) {
+      for (const lang of ['en', 'hi', 'es']) {
         try {
+          const ttUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}`;
           const res = await fetch(ttUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-            },
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
           });
           if (res.ok) {
             const raw = await res.text();
             const cleaned = parseCaptionText(raw);
             if (cleaned && cleaned.length > 20) {
+              console.log(`[YouTube Extract] Selected track language: ${lang}`);
+              console.log(`[YouTube Extract] Caption HTTP status: ${res.status}`);
+              console.log(`[YouTube Extract] Caption response byte length: ${raw.length}`);
+              console.log(`[YouTube Extract] Parsed transcript character count: ${cleaned.length}`);
               transcript = cleaned;
-              console.log(`[AIService] Succeeded via direct timedtext endpoint (${transcript.length} chars)`);
               break;
             }
           }
@@ -201,123 +304,9 @@ async function fetchYouTubeContent(url: string): Promise<{ transcript: string; t
       }
     }
 
-    // 3. Fallback: Timedtext track list query
-    if (!transcript) {
-      try {
-        const listRes = await fetch(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`);
-        if (listRes.ok) {
-          const xml = await listRes.text();
-          const trackMatches = xml.match(/lang_code="([^"]+)"/g);
-          if (trackMatches) {
-            const langCodes = trackMatches.map(m => m.split('"')[1]);
-            const preferredLang = langCodes.find(l => l.startsWith('en')) || langCodes[0];
-            if (preferredLang) {
-              const fetchRes = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=${preferredLang}&fmt=srv1`);
-              if (fetchRes.ok) {
-                const raw = await fetchRes.text();
-                const cleaned = parseCaptionText(raw);
-                if (cleaned && cleaned.length > 20) {
-                  transcript = cleaned;
-                  console.log(`[AIService] Succeeded via timedtext track list (${transcript.length} chars)`);
-                }
-              }
-            }
-          }
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    // 4. Fallback: Secondary desktop & mobile watch page HTML scrape
-    if (!transcript || !title) {
-      const pageUrls = [
-        `https://m.youtube.com/watch?v=${videoId}`,
-        url,
-      ];
-
-      for (const pUrl of pageUrls) {
-        if (transcript && title) break;
-        try {
-          const res = await fetch(pUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
-              'Accept-Language': 'en-US,en;q=0.9',
-            },
-          });
-          if (res.ok) {
-            const html = await res.text();
-
-            if (!title) {
-              const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
-              if (titleMatch) {
-                title = titleMatch[1].replace(' - YouTube', '').replace('- YouTube', '').trim();
-              }
-            }
-
-            if (!durationSeconds) {
-              const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                               html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                               html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
-              if (isoMatch) {
-                const hours = parseInt(isoMatch[1] || '0', 10);
-                const mins = parseInt(isoMatch[2] || '0', 10);
-                const secs = parseInt(isoMatch[3] || '0', 10);
-                durationSeconds = hours * 3600 + mins * 60 + secs;
-              }
-            }
-
-            if (!transcript) {
-              const idx = html.indexOf('"captionTracks":');
-              if (idx !== -1) {
-                const startIdx = html.indexOf('[', idx);
-                let depth = 0;
-                let endIdx = -1;
-                for (let i = startIdx; i < html.length; i++) {
-                  if (html[i] === '[') depth++;
-                  else if (html[i] === ']') depth--;
-                  if (depth === 0) { endIdx = i + 1; break; }
-                }
-                if (endIdx !== -1) {
-                  try {
-                    const jsonStr = html.substring(startIdx, endIdx);
-                    const tracks = JSON.parse(jsonStr);
-                    if (Array.isArray(tracks) && tracks.length > 0) {
-                      const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
-                      if (enTrack?.baseUrl) {
-                        let bUrl = enTrack.baseUrl.replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
-                        if (bUrl.startsWith('/')) {
-                          bUrl = `https://www.youtube.com${bUrl}`;
-                        }
-                        const capRes = await fetch(bUrl, {
-                          headers: {
-                            'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
-                            'Referer': pUrl,
-                          },
-                        });
-                        if (capRes.ok) {
-                          const rawCap = await capRes.text();
-                          const cleaned = parseCaptionText(rawCap);
-                          if (cleaned && cleaned.length > 20) {
-                            transcript = cleaned;
-                            console.log(`[AIService] Succeeded via watch page captionTracks JSON (${transcript.length} chars)`);
-                            break;
-                          }
-                        }
-                      }
-                    }
-                  } catch { /* non-fatal */ }
-                }
-              }
-            }
-          }
-        } catch (htmlErr: any) {
-          console.warn('[AIService] HTML fallback extraction warning:', htmlErr?.message || htmlErr);
-        }
-      }
-    }
-
     return { transcript, title, durationSeconds };
   } catch (e: any) {
-    console.warn('[AIService] YouTube extraction error:', e?.message || e);
+    console.warn('[YouTube Extract] Global extraction error:', e?.message || e);
     return { transcript: '' };
   }
 }
