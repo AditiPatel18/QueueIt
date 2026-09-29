@@ -42,6 +42,7 @@ frontend/out/
 dist/
 build/
 backend_node/dist/
+backend_node/bin/
 
 # ================================
 # IDE
