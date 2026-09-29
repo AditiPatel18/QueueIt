@@ -1,5 +1,5 @@
 # Use official Node 20 LTS slim Debian image (includes modern glibc and ca-certificates)
-FROM node:20-slim
+FROM node:22-slim
 
 WORKDIR /app
 
