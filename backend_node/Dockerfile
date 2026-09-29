@@ -28,9 +28,8 @@ RUN npm run build
 # Environment settings
 ENV NODE_ENV=production
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
-ENV PORT=8001
 
-EXPOSE 8001
+EXPOSE 10000
 
 # Run backend application
 CMD ["node", "dist/server.js"]

@@ -3,7 +3,7 @@ import { fallbackDb } from './utils/schemaFallback';
 import { startReminderScheduler, startNotificationQueueWorker } from './services/schedulerService';
 import { YouTubeExtractor } from './services/youtubeExtractor';
 
-const PORT = Number(process.env.PORT) || 8001;
+const PORT = Number(process.env.PORT) || 10000;
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`Server is running on port ${PORT}`);
