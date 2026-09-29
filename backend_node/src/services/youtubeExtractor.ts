@@ -94,11 +94,14 @@ export class YouTubeExtractor {
         return { available: false, resolvedPath, version: 'unknown', error: 'yt-dlp returned empty output' };
       }
     } catch (err: any) {
+      const stderr = err?.stderr ? String(err.stderr).trim() : '';
+      const message = err?.message ? String(err.message).trim() : String(err);
+      const detailedError = stderr ? `${message} | stderr: ${stderr}` : message;
       return {
         available: false,
         resolvedPath,
         version: 'unavailable',
-        error: err?.message || String(err),
+        error: detailedError,
       };
     }
   }
