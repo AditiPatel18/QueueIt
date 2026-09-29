@@ -7,15 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
     python3 \
+    python3-venv \
     make \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L -f https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
-    -o /usr/local/bin/yt-dlp && \
-    chmod a+rx /usr/local/bin/yt-dlp
+RUN python3 -m venv /opt/yt-dlp-venv && \
+    /opt/yt-dlp-venv/bin/pip install --no-cache-dir -U yt-dlp
 
-RUN /usr/local/bin/yt-dlp --version
+RUN /opt/yt-dlp-venv/bin/yt-dlp --version
 
 COPY package*.json ./
 
@@ -28,7 +28,7 @@ COPY . .
 RUN npm run build
 
 ENV NODE_ENV=production
-ENV YTDLP_PATH=/usr/local/bin/yt-dlp
+ENV YTDLP_PATH=/opt/yt-dlp-venv/bin/yt-dlp
 
 EXPOSE 10000
 
