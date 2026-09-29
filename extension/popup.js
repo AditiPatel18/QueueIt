@@ -72,6 +72,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return 'article';
     };
 
+    let currentTranscriptText = "";
+
     // 1. Get current tab info
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const activeTab = tabs[0];
@@ -100,6 +102,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 sourceNameEl.textContent = new URL(currentUrl).hostname.replace('www.', '');
                 readTimeEl.textContent = "~1 min read";
                 return;
+            }
+
+            if (response.transcriptText) {
+                currentTranscriptText = response.transcriptText;
             }
 
             // After receiving response from content script
@@ -139,12 +145,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Helper: extract auth token from cookies array
     const extractTokenFromCookies = (cookies) => {
-        if (!cookies || cookies.length === 0) return null;
+        if (!cookies || !Array.isArray(cookies)) return null;
 
         const cookieGroups = {};
         for (const c of cookies) {
-            if (!c.name) continue;
-            const baseName = c.name.replace(/\.\d+$/, '');
+            const baseName = c.name.split('.')[0];
             if (!cookieGroups[baseName]) cookieGroups[baseName] = [];
             cookieGroups[baseName].push(c);
         }
@@ -254,6 +259,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             let response;
             let data = null;
 
+            const savePayload = {
+                url: urlInput.value,
+                title: titleInput.value || undefined
+            };
+            if (currentTranscriptText) {
+                savePayload.transcriptText = currentTranscriptText;
+            }
+
             try {
                 response = await fetch(primaryApiUrl, {
                     method: "POST",
@@ -261,10 +274,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         "Content-Type": "application/json",
                         "Authorization": `Bearer ${token}`
                     },
-                    body: JSON.stringify({
-                        url: urlInput.value,
-                        title: titleInput.value || undefined
-                    })
+                    body: JSON.stringify(savePayload)
                 });
             } catch (netErr) {
                 console.warn(`Primary API endpoint (${primaryApiUrl}) failed, attempting fallback (${fallbackApiUrl})...`, netErr);
@@ -274,10 +284,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         "Content-Type": "application/json",
                         "Authorization": `Bearer ${token}`
                     },
-                    body: JSON.stringify({
-                        url: urlInput.value,
-                        title: titleInput.value || undefined
-                    })
+                    body: JSON.stringify(savePayload)
                 });
             }
 

@@ -277,7 +277,7 @@ async function runMockEnrichmentPipeline(itemId: string, url: string, userId: st
 router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const userId = getUserId(req);
   try {
-    const { url, title, collection_id, suggested_collection_name, suggested_collection_color } = req.body;
+    const { url, title, collection_id, suggested_collection_name, suggested_collection_color, transcriptText } = req.body;
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ detail: 'URL is required' });
     }
@@ -306,13 +306,26 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
 
     if (existingItem) {
       const hasExtractedText = Boolean(existingItem.extracted_text && String(existingItem.extracted_text).trim().length > 0);
-      const isStaleSummary = existingItem.ai_summary === 'Transcript unavailable' || existingItem.ai_summary === 'Summary unavailable';
+      const isStaleSummary = !existingItem.ai_summary ||
+                             existingItem.ai_summary === 'Transcript unavailable' ||
+                             existingItem.ai_summary === 'Summary unavailable' ||
+                             existingItem.processing_status === 'failed';
 
-      if (hasExtractedText && isStaleSummary) {
+      if (isStaleSummary || !hasExtractedText) {
+        await supabase.from('items').update({
+          processing_status: 'queued',
+          ai_summary: null,
+          notes: null,
+        }).eq('id', existingItem.id);
+
         runMockEnrichmentPipeline(existingItem.id, cleanUrl, userId, existingItem.title || title || null).catch(() => {});
       }
 
-      const merged = await fallbackDb.mergeSingleItemMetadata(userId, existingItem);
+      const merged = await fallbackDb.mergeSingleItemMetadata(userId, {
+        ...existingItem,
+        processing_status: (isStaleSummary || !hasExtractedText) ? 'queued' : existingItem.processing_status,
+        ai_summary: (isStaleSummary || !hasExtractedText) ? null : existingItem.ai_summary,
+      });
       const resp = itemToResponse(merged);
       return res.status(200).set('X-QueueIt-Duplicate', 'true').json({ ...resp, is_duplicate: true });
     }
@@ -351,6 +364,9 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
       is_favorite: false,
     };
     if (resolvedCollectionId) itemData.collection_id = resolvedCollectionId;
+    if (transcriptText && typeof transcriptText === 'string' && transcriptText.trim()) {
+      itemData.extracted_text = transcriptText.trim();
+    }
 
     let insertResult: any;
     try {
@@ -366,6 +382,9 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
         processing_status: 'queued', is_favorite: false,
       };
       if (resolvedCollectionId) safeData.collection_id = resolvedCollectionId;
+      if (transcriptText && typeof transcriptText === 'string' && transcriptText.trim()) {
+        safeData.extracted_text = transcriptText.trim();
+      }
       const { data, error: e2 } = await supabase.from('items').insert(safeData).select().single();
       if (e2) throw e2;
       insertResult = data;
@@ -1527,7 +1546,11 @@ router.post('/:id/retry', requireAuth, async (req: AuthenticatedRequest, res: Re
     if (error || !data) return res.status(404).json({ detail: 'Item not found' });
 
     // Reset to queued
-    await supabase.from('items').update({ processing_status: 'queued', ai_summary: 'Queued for AI summary...' }).eq('id', itemId);
+    await supabase.from('items').update({
+      processing_status: 'queued',
+      ai_summary: null,
+      notes: null,
+    }).eq('id', itemId);
     updateIngestionDebug(itemId, 'queued', 'Item manually enqueued for retry.');
 
     // Kick off mock pipeline

@@ -4,336 +4,20 @@ import path from 'path';
 import { supabase } from '../config/supabase';
 import { fallbackDb } from '../utils/schemaFallback';
 import { resolvePlatformInfo } from '../utils/urlHelper';
+import { YouTubeExtractor, YouTubeExtractionResult } from './youtubeExtractor';
 
 dotenv.config();
 
-/** Helper function to extract YouTube metadata, duration, and transcript using direct watch page, Innertube RPC, and fallbacks */
+/** Helper function to extract YouTube metadata, duration, and transcript using YouTubeExtractor */
 async function fetchYouTubeContent(url: string): Promise<{ transcript: string; title?: string; durationSeconds?: number }> {
-  try {
-    const vMatch = url.match(/(?:v=|\/embed\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-    const videoId = vMatch ? vMatch[1] : null;
-
-    if (!videoId) {
-      return { transcript: '' };
-    }
-
-    let title = '';
-    let durationSeconds = 0;
-    let transcript = '';
-
-    const publicKeys = [
-      'AIzaSyAO_FJ2SlqU8Q4STEihQIxomIq_S9waxqY',
-      'AIzaSyC1xlsmZOMtvD_3epXvIqf4gE3b-t9R_2E',
-      'AIzaSyBflxtu4so615_dC_YyH9Z2zL6q9vU2-gA',
-    ];
-
-    const clientConfigs = [
-      { name: 'ANDROID', clientName: 'ANDROID', clientNumber: '3', clientVersion: '20.10.38', ua: 'com.google.android.youtube/20.10.38 (Linux; U; Android 11; en_US; Pixel 5 Build/RD1A.201105.003.C1)' },
-      { name: 'IOS', clientName: 'IOS', clientNumber: '2', clientVersion: '19.45.4', ua: 'com.google.ios.youtube/19.45.4 (iPhone14,3; U; CPU iOS 17_5_1 like Mac OS X; en_US)' },
-      { name: 'WEB', clientName: 'WEB', clientNumber: '1', clientVersion: '2.20240308.00.00', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' },
-    ];
-
-    console.log(`[YouTube Extract] Video ID: ${videoId}`);
-
-    const fetchWithTimeout = async (inputUrl: string, opts: any = {}, timeoutMs: number = 8000) => {
-      return fetch(inputUrl, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
-    };
-
-    // Helper to clean raw caption XML or JSON3 string into plain text with space separators
-    const parseCaptionText = (raw: string): string => {
-      if (!raw || !raw.trim()) return '';
-      const trimmed = raw.trim();
-      if (trimmed.startsWith('{')) {
-        try {
-          const jsonCap = JSON.parse(trimmed);
-          const parts: string[] = [];
-          if (Array.isArray(jsonCap.events)) {
-            for (const ev of jsonCap.events) {
-              if (Array.isArray(ev.segs)) {
-                for (const seg of ev.segs) {
-                  if (seg.utf8) parts.push(seg.utf8);
-                }
-              }
-            }
-          }
-          const parsed = parts.join(' ').replace(/\s+/g, ' ').trim();
-          if (parsed.length > 20) return parsed;
-        } catch { /* fallback to regex */ }
-      }
-      return trimmed
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&#39;/g, "'")
-        .replace(/&quot;/g, '"')
-        .replace(/\s+/g, ' ')
-        .trim();
-    };
-
-    // 1. Multi-client Innertube Player RPC
-    let isRateLimited = false;
-    for (const clientCfg of clientConfigs) {
-      if (transcript || isRateLimited) break;
-      for (const key of publicKeys) {
-        if (transcript || isRateLimited) break;
-        try {
-          console.log(`[AIService] Trying Innertube RPC client=${clientCfg.name} key=${key.substring(0, 8)}... for video ${videoId}`);
-          const playerRes = await fetchWithTimeout(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': clientCfg.ua,
-              'Origin': 'https://www.youtube.com',
-              'Referer': 'https://www.youtube.com/',
-              'X-YouTube-Client-Name': clientCfg.clientNumber,
-              'X-YouTube-Client-Version': clientCfg.clientVersion,
-            },
-            body: JSON.stringify({
-              context: {
-                client: {
-                  clientName: clientCfg.clientName,
-                  clientVersion: clientCfg.clientVersion,
-                  hl: 'en',
-                  gl: 'US',
-                },
-              },
-              videoId: videoId,
-            }),
-          });
-
-          console.log(`[AIService] Innertube RPC client=${clientCfg.name} returned HTTP ${playerRes.status}`);
-          if (!playerRes.ok) continue;
-
-          const playerData: any = await playerRes.json();
-          console.log(`[AIService] playabilityStatus=${playerData?.playabilityStatus?.status}, hasVideoDetails=${Boolean(playerData?.videoDetails)}, hasCaptions=${Boolean(playerData?.captions)}`);
-
-          if (playerData?.videoDetails) {
-            if (!title && playerData.videoDetails.title) {
-              title = playerData.videoDetails.title.trim();
-            }
-            if (!durationSeconds && playerData.videoDetails.lengthSeconds) {
-              durationSeconds = parseInt(playerData.videoDetails.lengthSeconds, 10) || 0;
-            }
-          }
-
-          const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-          if (captionTracks && Array.isArray(captionTracks) && captionTracks.length > 0) {
-            console.log(`[YouTube Extract] Caption tracks found: ${captionTracks.length}`);
-            const preferredTrack = captionTracks.find((t: any) =>
-              t.languageCode === 'en' ||
-              t.vssId?.includes('en') ||
-              t.vssId?.includes('.en') ||
-              t.name?.runs?.[0]?.text?.toLowerCase().includes('english')
-            );
-
-            // Deduplicate tracks to prevent repeated requests to same baseUrl
-            const candidateTracks = preferredTrack ? [preferredTrack, ...captionTracks] : captionTracks;
-            const seenUrls = new Set<string>();
-            const uniqueTracks = candidateTracks.filter((t: any) => {
-              if (!t?.baseUrl || seenUrls.has(t.baseUrl)) return false;
-              seenUrls.add(t.baseUrl);
-              return true;
-            });
-
-            for (const track of uniqueTracks) {
-              if (transcript || isRateLimited) break;
-
-              const trackUrl = track.baseUrl;
-              if (trackUrl.includes('ip=0.0.0.0')) {
-                console.warn('[YouTube Extract] Skipping unsafe caption URL containing ip=0.0.0.0');
-                continue;
-              }
-
-              const selectedLang = track.languageCode || track.vssId || 'unknown';
-              console.log(`[YouTube Extract] Selected track language: ${selectedLang}`);
-              const capRes = await fetchWithTimeout(trackUrl, {
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-                  'Referer': 'https://www.youtube.com/',
-                  'Origin': 'https://www.youtube.com',
-                },
-              });
-
-              console.log(`[YouTube Extract] Caption HTTP status: ${capRes.status}`);
-              if (capRes.status === 429) {
-                console.warn(`[YouTube Extract] Rate limited (HTTP 429) fetching caption track`);
-                isRateLimited = true;
-                break;
-              }
-              if (capRes.ok) {
-                const rawCap = await capRes.text();
-                console.log(`[YouTube Extract] Caption response byte length: ${rawCap.length}`);
-                const cleaned = parseCaptionText(rawCap);
-                console.log(`[YouTube Extract] Parsed transcript character count: ${cleaned.length}`);
-                if (cleaned && cleaned.length > 20) {
-                  transcript = cleaned;
-                  console.log(`[AIService] Succeeded via Innertube RPC (${clientCfg.name}) - ${transcript.length} chars`);
-                  break;
-                }
-              }
-            }
-          }
-        } catch (keyErr: any) {
-          console.warn(`[AIService] Innertube RPC warning (${clientCfg.name}):`, keyErr?.message || keyErr);
-        }
-      }
-    }
-
-    // 2. Fallback: Direct Timedtext API endpoint search
-    if (!transcript) {
-      console.log(`[AIService] Attempting direct timedtext API fallback for video ${videoId}...`);
-      const timedTextUrls = [
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv1`,
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&kind=asr&fmt=srv1`,
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=hi&fmt=srv1`,
-        `https://www.youtube.com/api/timedtext?v=${videoId}&lang=hi&kind=asr&fmt=srv1`,
-      ];
-
-      for (const ttUrl of timedTextUrls) {
-        try {
-          const res = await fetchWithTimeout(ttUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-            },
-          });
-          if (res.ok) {
-            const raw = await res.text();
-            const cleaned = parseCaptionText(raw);
-            if (cleaned && cleaned.length > 20) {
-              transcript = cleaned;
-              console.log(`[AIService] Succeeded via direct timedtext endpoint (${transcript.length} chars)`);
-              break;
-            }
-          }
-        } catch { /* non-fatal */ }
-      }
-    }
-
-    // 3. Fallback: Timedtext track list query
-    if (!transcript) {
-      try {
-        const listRes = await fetchWithTimeout(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`);
-        if (listRes.ok) {
-          const xml = await listRes.text();
-          const trackMatches = xml.match(/lang_code="([^"]+)"/g);
-          if (trackMatches) {
-            const langCodes = trackMatches.map(m => m.split('"')[1]);
-            const preferredLang = langCodes.find(l => l.startsWith('en')) || langCodes[0];
-            if (preferredLang) {
-              const fetchRes = await fetchWithTimeout(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=${preferredLang}&fmt=srv1`);
-              if (fetchRes.ok) {
-                const raw = await fetchRes.text();
-                const cleaned = parseCaptionText(raw);
-                if (cleaned && cleaned.length > 20) {
-                  transcript = cleaned;
-                  console.log(`[AIService] Succeeded via timedtext track list (${transcript.length} chars)`);
-                }
-              }
-            }
-          }
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    // 4. Fallback: Secondary desktop & mobile watch page HTML scrape
-    if (!transcript || !title) {
-      const pageUrls = [
-        `https://m.youtube.com/watch?v=${videoId}`,
-        url,
-      ];
-
-      for (const pUrl of pageUrls) {
-        if (transcript && title) break;
-        try {
-          const res = await fetchWithTimeout(pUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
-              'Accept-Language': 'en-US,en;q=0.9',
-            },
-          });
-          if (res.ok) {
-            const html = await res.text();
-
-            if (!title) {
-              const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/"title":\s*"([^"]+)"/);
-              if (titleMatch) {
-                title = titleMatch[1].replace(' - YouTube', '').replace('- YouTube', '').trim();
-              }
-            }
-
-            if (!durationSeconds) {
-              const isoMatch = html.match(/itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                               html.match(/meta\s+itemprop="duration"\s+content="PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i) ||
-                               html.match(/"duration":\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
-              if (isoMatch) {
-                const hours = parseInt(isoMatch[1] || '0', 10);
-                const mins = parseInt(isoMatch[2] || '0', 10);
-                const secs = parseInt(isoMatch[3] || '0', 10);
-                durationSeconds = hours * 3600 + mins * 60 + secs;
-              }
-            }
-
-            if (!transcript) {
-              const idx = html.indexOf('"captionTracks":');
-              if (idx !== -1) {
-                const startIdx = html.indexOf('[', idx);
-                let depth = 0;
-                let endIdx = -1;
-                for (let i = startIdx; i < html.length; i++) {
-                  if (html[i] === '[') depth++;
-                  else if (html[i] === ']') depth--;
-                  if (depth === 0) { endIdx = i + 1; break; }
-                }
-                if (endIdx !== -1) {
-                  try {
-                    const jsonStr = html.substring(startIdx, endIdx);
-                    const tracks = JSON.parse(jsonStr);
-                    if (Array.isArray(tracks) && tracks.length > 0) {
-                      const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('en')) || tracks[0];
-                      if (enTrack?.baseUrl) {
-                        let bUrl = enTrack.baseUrl.replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
-                        if (bUrl.startsWith('/')) {
-                          bUrl = `https://www.youtube.com${bUrl}`;
-                        }
-                        if (bUrl.includes('ip=0.0.0.0')) {
-                          console.warn('[YouTube Extract] Skipping unsafe caption URL containing ip=0.0.0.0');
-                        } else {
-                          const capRes = await fetchWithTimeout(bUrl, {
-                            headers: {
-                              'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
-                              'Referer': pUrl,
-                            },
-                          });
-                          if (capRes.ok) {
-                            const rawCap = await capRes.text();
-                            const cleaned = parseCaptionText(rawCap);
-                            if (cleaned && cleaned.length > 20) {
-                              transcript = cleaned;
-                              console.log(`[AIService] Succeeded via watch page captionTracks JSON (${transcript.length} chars)`);
-                              break;
-                            }
-                          }
-                        }
-                      }
-                    }
-                  } catch { /* non-fatal */ }
-                }
-              }
-            }
-          }
-        } catch (htmlErr: any) {
-          console.warn('[AIService] HTML fallback extraction warning:', htmlErr?.message || htmlErr);
-        }
-      }
-    }
-
-    return { transcript, title, durationSeconds };
-  } catch (e: any) {
-    console.warn('[YouTube Extract] Global extraction error:', e?.message || e);
-    return { transcript: '' };
-  }
+  const result = await YouTubeExtractor.extractYouTubeContent(url);
+  return {
+    transcript: result.transcript || '',
+    title: result.title,
+    durationSeconds: result.durationSeconds,
+  };
 }
+
 
 /** Translate non-English transcript text to clear English using Gemini API */
 async function translateToEnglishIfNeeded(text: string): Promise<string> {
@@ -605,14 +289,15 @@ export class AIService {
     const platform = resolvePlatformInfo(url);
     const isYouTube = platform.source_type === 'youtube' || url.includes('youtube.com') || url.includes('youtu.be');
 
-    // If YouTube video has no transcript, do NOT generate a fake/generic summary
-    if (isYouTube && (!snippet || !snippet.trim())) {
+    // If content has no transcript/text, return empty summary without calling Gemini
+    if (!snippet || !snippet.trim() || snippet.trim().length < 20) {
       return {
-        summary: 'Transcript unavailable',
-        tags: ['video', 'youtube'],
+        summary: '',
+        tags: [contentType || platform.source_type || 'article', 'general'],
         priority: 50,
       };
     }
+
 
     const apiKey = this.getApiKey();
     if (!apiKey) {
@@ -738,25 +423,98 @@ CRITICAL SUMMARIZATION RULES:
       } catch { /* non-fatal */ }
 
       const isYouTube = platformInfo.source_type === 'youtube' || url.includes('youtube.com') || url.includes('youtu.be');
+      const isPdf = platformInfo.source_type === 'pdf' || url.toLowerCase().endsWith('.pdf') || url.toLowerCase().includes('/pdf/');
       let ytDurationSeconds = 0;
 
-      // Step 1: If YouTube URL and no existing transcript, extract real video metadata & duration
+      // Step 0: Mark processing_status as 'processing'
+      try {
+        await supabase.from('items').update({ processing_status: 'processing' }).eq('id', itemId);
+      } catch { /* non-fatal */ }
+
+      // Step 1: If YouTube URL and no existing transcript, extract video metadata & transcript using YouTubeExtractor
       if (isYouTube && (!snippet || !snippet.trim())) {
-        console.log(`[PIPELINE LOG] [AI Service] Extracting YouTube video metadata & duration for ${url}...`);
-        const extracted = await fetchYouTubeContent(url);
-        if (extracted.durationSeconds && extracted.durationSeconds > 0) {
-          ytDurationSeconds = extracted.durationSeconds;
+        console.log(`[PIPELINE LOG] [AI Service] Extracting YouTube video content for ${url}...`);
+        const extractionResult = await YouTubeExtractor.extractYouTubeContent(url);
+
+        console.log(`[YouTube Extraction Details] URL: ${url} | VideoID: ${extractionResult.videoId} | Method: ${extractionResult.extractionMethod} | yt-dlp Version: ${extractionResult.ytDlpVersion} | Success: ${extractionResult.success} | Captions Found: ${Boolean(extractionResult.transcript)} | Transcript Length: ${extractionResult.transcriptLength} | Stderr/Error: ${extractionResult.error || extractionResult.stderr || 'None'}`);
+
+        if (extractionResult.durationSeconds && extractionResult.durationSeconds > 0) {
+          ytDurationSeconds = extractionResult.durationSeconds;
         }
-        if (extracted.transcript && extracted.transcript.trim()) {
-          snippet = extracted.transcript;
+        if (extractionResult.title && extractionResult.title.trim()) {
+          title = extractionResult.title.trim();
         }
-        if (extracted.title && extracted.title.trim()) {
-          title = extracted.title.trim();
+
+        if (!extractionResult.success || !extractionResult.transcript || !extractionResult.transcript.trim()) {
+          const failReason = extractionResult.error || 'No transcript or captions available for video';
+          console.warn(`[YouTube Extract] Skipping Gemini summary generation because transcript extraction failed: ${failReason}`);
+
+          const failPayload: Record<string, any> = {
+            processing_status: 'failed',
+            ai_summary: null,
+            notes: `[Extraction Failed] ${failReason}`,
+            title: title,
+          };
+          if (ytDurationSeconds > 0) failPayload.duration_seconds = ytDurationSeconds;
+
+          await supabase.from('items').update(failPayload).eq('id', itemId);
+          try {
+            await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[Extraction Failed] ${failReason}` }, supabase);
+          } catch { /* non-fatal */ }
+          return;
         }
+
+        snippet = extractionResult.transcript;
+      }
+
+      if (isPdf) {
+        console.log(`[PDF_DIAG] ========================================`);
+        console.log(`[PDF_DIAG] Starting PDF processing path for item ${itemId}`);
+        console.log(`[PDF_DIAG] PDF Source: ${url.startsWith('data:') ? 'Uploaded Buffer' : `Fetched URL (${url})`}`);
+
+        try {
+          let pdfExtractionLib: string | null = null;
+          try {
+            require.resolve('pdf-parse');
+            pdfExtractionLib = 'pdf-parse';
+          } catch (e: any) {
+            console.log(`[PDF_DIAG] PDF extraction library resolution attempt (pdf-parse): ${e?.message || e}`);
+          }
+
+          console.log(`[PDF_DIAG] Extraction library currently in use: ${pdfExtractionLib || 'NONE (No PDF extraction library installed or invoked in backend)'}`);
+          console.log(`[PDF_DIAG] Raw extraction library return value before fallback: ${JSON.stringify(snippet)}`);
+          console.log(`[PDF_DIAG] Raw extracted text length: ${snippet ? snippet.length : 0}`);
+
+          if (!snippet || !snippet.trim()) {
+            console.log(`[PDF_DIAG] [No Text Extracted] Triggered: extracted_text is empty for PDF item (${url})`);
+          }
+
+          console.log(`[PDF_DIAG] PDF Metadata: Page Count = N/A (No parser library active), Has Text Layer = N/A`);
+        } catch (pdfErr: any) {
+          console.error(`[PDF_DIAG] Caught exception during PDF extraction path:`, pdfErr?.message || pdfErr);
+          if (pdfErr?.stack) {
+            console.error(`[PDF_DIAG] Full stack trace:\n${pdfErr.stack}`);
+          }
+        }
+        console.log(`[PDF_DIAG] ========================================`);
       }
 
       // Step 2: Ensure transcript is in English for storage and AI processing
       snippet = await translateToEnglishIfNeeded(snippet);
+
+      if (!snippet || !snippet.trim() || snippet.trim().length < 20) {
+        console.warn(`[AIService] Skipping Gemini summary generation because no usable content was extracted for item ${itemId}`);
+        const failPayload: Record<string, any> = {
+          processing_status: 'failed',
+          ai_summary: null,
+          notes: '[Extraction Failed] No usable text content could be extracted from source.',
+        };
+        await supabase.from('items').update(failPayload).eq('id', itemId);
+        try {
+          await fallbackDb.updateItemMetadata(userId, itemId, { notes: '[Extraction Failed] No usable text content' }, supabase);
+        } catch { /* non-fatal */ }
+        return;
+      }
 
       // Step 3: Store extracted English transcript in database if available
       if (snippet && snippet.trim()) {
@@ -794,6 +552,7 @@ CRITICAL SUMMARIZATION RULES:
 
       // Step 6: Generate abstractive whole-content AI summary via Gemini API
       const result = await this.generateSummary(title, url, platformInfo.source_type, snippet);
+      console.log(`[Gemini Generation Result] ItemID: ${itemId} | Summary Generated Length: ${result.summary ? result.summary.length : 0} chars | Priority: ${result.priority}`);
 
       // Auto-determine folder, create if missing, and assign collection_id
       let collectionId: string | null = null;
@@ -815,6 +574,7 @@ CRITICAL SUMMARIZATION RULES:
 
       const updatePayload: Record<string, any> = {
         ai_summary: result.summary,
+        notes: null,
         tags: result.tags,
         processing_status: 'completed',
         estimated_read_time: estimatedReadTime,
@@ -834,6 +594,7 @@ CRITICAL SUMMARIZATION RULES:
         console.warn('[AIService] Supabase update warning:', error.message);
         const safePayload: Record<string, any> = {
           ai_summary: result.summary,
+          notes: null,
           tags: result.tags,
           processing_status: 'completed',
           priority_score: result.priority,
@@ -855,7 +616,8 @@ CRITICAL SUMMARIZATION RULES:
       try {
         await supabase.from('items').update({
           processing_status: 'failed',
-          ai_summary: 'Summary unavailable',
+          ai_summary: null,
+          notes: `[Extraction Failed] Error during enrichment: ${err?.message || err}`,
         }).eq('id', itemId);
       } catch { /* non-fatal */ }
     }

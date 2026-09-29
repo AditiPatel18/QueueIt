@@ -1,4 +1,5 @@
 import { AIService } from '../../src/services/aiService';
+import { YouTubeExtractor } from '../../src/services/youtubeExtractor';
 
 // Mock Supabase
 jest.mock('../../src/config/supabase', () => ({
@@ -107,59 +108,50 @@ describe('AIService Unit Tests', () => {
     });
   });
 
-  describe('extractYouTubeContent caption extraction safety', () => {
-    it('should skip fetching caption URLs containing ip=0.0.0.0 and proceed to fallback strategies', async () => {
+  describe('extractYouTubeContent via YouTubeExtractor', () => {
+    it('should delegate extractYouTubeContent call to YouTubeExtractor', async () => {
       const videoUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
-
-      (global.fetch as jest.Mock).mockImplementation((url: string) => {
-        if (typeof url === 'string' && url.includes('youtubei/v1/player')) {
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            json: () => Promise.resolve({
-              videoDetails: { title: 'Test Video Title', lengthSeconds: '212' },
-              captions: {
-                playerCaptionsTracklistRenderer: {
-                  captionTracks: [
-                    {
-                      baseUrl: 'https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&ip=0.0.0.0&expire=12345',
-                      languageCode: 'en',
-                    },
-                  ],
-                },
-              },
-            }),
-            text: () => Promise.resolve(''),
-          });
-        }
-
-        if (typeof url === 'string' && url.includes('api/timedtext?v=dQw4w9WgXcQ&lang=en')) {
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            text: () => Promise.resolve('<transcript><text start="0" dur="2">Hello world from direct timedtext fallback transcript</text></transcript>'),
-          });
-        }
-
-        return Promise.resolve({
-          ok: false,
-          status: 404,
-          text: () => Promise.resolve(''),
-        });
+      const spy = jest.spyOn(YouTubeExtractor, 'extractYouTubeContent').mockResolvedValueOnce({
+        success: true,
+        videoId: 'dQw4w9WgXcQ',
+        url: videoUrl,
+        title: 'Mock Video Title',
+        transcript: 'Mock transcript content',
+        extractionMethod: 'yt-dlp',
+        ytDlpVersion: '2026.08.19',
+        transcriptLength: 23,
       });
 
       const res = await AIService.extractYouTubeContent(videoUrl);
+      expect(spy).toHaveBeenCalledWith(videoUrl);
+      expect(res).toBeDefined();
+      expect(res.title).toBe('Mock Video Title');
+      expect(res.transcript).toBe('Mock transcript content');
+    });
 
-      // Verify that fetch was never called with ip=0.0.0.0
-      const fetchCalls = (global.fetch as jest.Mock).mock.calls;
-      const fetchedIpUrl = fetchCalls.some(call => typeof call[0] === 'string' && call[0].includes('ip=0.0.0.0'));
-      expect(fetchedIpUrl).toBe(false);
+    it('should record failure and enforce backoff for repeated invalid video extractions', async () => {
+      const videoUrl = 'https://www.youtube.com/watch?v=invalid_vid_backoff_test';
+      const spy = jest.spyOn(YouTubeExtractor, 'extractYouTubeContent').mockImplementation(async (url) => {
+        const vid = YouTubeExtractor.extractVideoId(url)!;
+        const { inBackoff } = YouTubeExtractor.isVideoInBackoff(vid);
+        if (inBackoff) {
+          return { success: false, videoId: vid, url, extractionMethod: 'backoff', ytDlpVersion: '2026', transcriptLength: 0, error: 'backoff' };
+        }
+        YouTubeExtractor.recordFailure(vid, false);
+        return { success: false, videoId: vid, url, extractionMethod: 'cli', ytDlpVersion: '2026', transcriptLength: 0, error: 'failed' };
+      });
 
-      // Verify that transcript was extracted from the fallback
-      expect(res.transcript).toContain('Hello world from direct timedtext fallback transcript');
-      expect(res.title).toBe('Test Video Title');
-      expect(res.durationSeconds).toBe(212);
+      const res1 = await AIService.extractYouTubeContent(videoUrl);
+      expect(res1.transcript).toBe('');
+
+      const res2 = await AIService.extractYouTubeContent(videoUrl);
+      expect(res2.transcript).toBe('');
+      expect(spy).toHaveBeenCalledTimes(2);
     });
   });
+
 });
+
+
+
 

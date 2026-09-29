@@ -636,23 +636,23 @@ export const QueueItemCard = memo(function QueueItemCard({
                   </div>
                 ) : (item.processing_status === "failed") ? (
                   <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center justify-between bg-red-500/5 rounded-lg p-2 border border-red-500/10">
-                    <div className="flex gap-2 items-center">
+                    <div className="flex gap-2 items-center min-w-0 flex-1">
                       <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
-                      <p className="leading-relaxed font-semibold text-red-600 dark:text-red-400">
-                        Summary unavailable
+                      <p className="leading-relaxed font-semibold text-red-600 dark:text-red-400 truncate">
+                        {(item as any).notes?.replace('[Extraction Failed] ', '') || "Extraction failed"}
                       </p>
                     </div>
                     <Button 
                       variant="outline" 
                       size="sm" 
                       onClick={handleRetryAI} 
-                      className="h-7 text-[10px] uppercase font-bold border-red-500/30 text-red-500 hover:bg-red-500/10 cursor-pointer"
+                      className="h-7 text-[10px] uppercase font-bold border-red-500/30 text-red-500 hover:bg-red-500/10 cursor-pointer shrink-0"
                       disabled={isRetryingAI}
                     >
                       {isRetryingAI ? "Retrying..." : "Retry AI"}
                     </Button>
                   </div>
-                ) : item.ai_summary ? (
+                ) : (item.ai_summary && item.ai_summary !== "Transcript unavailable" && item.ai_summary !== "Summary unavailable") ? (
                   <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-start bg-primary/5 rounded-lg p-2 border border-primary/5">
                     <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5 animate-pulse-slow" />
                     <p className="line-clamp-2 leading-relaxed">{item.ai_summary}</p>
@@ -958,10 +958,10 @@ export const QueueItemCard = memo(function QueueItemCard({
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
                     </h4>
                     <p className="text-xs text-red-600 dark:text-red-400 font-semibold leading-relaxed bg-red-500/5 rounded p-2.5 border border-red-500/10">
-                      Summary unavailable
+                      {(item as any).notes?.replace('[Extraction Failed] ', '') || "Extraction failed"}
                     </p>
                   </div>
-                ) : (item.full_summary || item.ai_summary) ? (
+                ) : (item.full_summary || (item.ai_summary && item.ai_summary !== "Transcript unavailable" && item.ai_summary !== "Summary unavailable")) ? (
                   <div className="space-y-1">
                     <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary

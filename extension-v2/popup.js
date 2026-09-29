@@ -241,12 +241,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             let faviconUrl = faviconImgEl.src;
             let estReadTime = 1;
 
+            let extractedTranscriptText = "";
             if (!chrome.runtime.lastError && response) {
                 if (response.title && response.title.trim() !== "YouTube") {
                     extractedTitle = response.title;
                 }
                 if (extractedTitle.includes(" - YouTube")) {
                     extractedTitle = extractedTitle.replace(" - YouTube", "").trim();
+                }
+                if (response.transcriptText) {
+                    extractedTranscriptText = response.transcriptText;
                 }
                 
                 previewTitleEl.textContent = extractedTitle;
@@ -264,12 +268,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Perform Save Process
-            await saveToQueue(currentUrl, extractedTitle);
+            await saveToQueue(currentUrl, extractedTitle, false, extractedTranscriptText);
         });
     });
 
     // Check duplicate and save to API
-    async function saveToQueue(url, title, isRetry = false) {
+    async function saveToQueue(url, title, isRetry = false, transcriptText = "") {
         showToast(toastLoading);
 
         let session = await getAuthSession(isRetry);
@@ -302,7 +306,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (getResponse.status === 401 || getResponse.status === 403) {
                 chrome.storage.local.remove(['authToken', 'appUrl'], async () => {
                     if (!isRetry) {
-                        await saveToQueue(url, title, true);
+                        await saveToQueue(url, title, true, transcriptText);
                     } else {
                         showError("Please log in to QueueIt first", true, targetWebUrl);
                     }
@@ -332,6 +336,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             let saveResponse;
             let responseData = null;
 
+            const savePayload = { url: url, title: title || undefined };
+            if (transcriptText) savePayload.transcriptText = transcriptText;
+
             try {
                 saveResponse = await fetch(primaryApiUrl, {
                     method: "POST",
@@ -339,7 +346,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         "Content-Type": "application/json",
                         "Authorization": `Bearer ${token}`
                     },
-                    body: JSON.stringify({ url: url, title: title || undefined })
+                    body: JSON.stringify(savePayload)
                 });
             } catch (netErr) {
                 saveResponse = await fetch(fallbackApiUrl, {
@@ -348,7 +355,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         "Content-Type": "application/json",
                         "Authorization": `Bearer ${token}`
                     },
-                    body: JSON.stringify({ url: url, title: title || undefined })
+                    body: JSON.stringify(savePayload)
                 });
             }
 
