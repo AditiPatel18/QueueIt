@@ -40,7 +40,7 @@ Return ONLY the final translated English text without any explanations, meta-com
 Text:
 ${text.substring(0, 10000)}`;
 
-  const models = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-flash-latest'];
   for (const model of models) {
     try {
       const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -330,7 +330,7 @@ CRITICAL SUMMARIZATION RULES:
 6. Zero Generic Filler: Omit greetings, repetition, non-essential examples, irrelevant details, and generic filler words like "essential concepts", "key principles", or "practical applications".
 7. Output Format: Return ONLY the final summary text (1-2 plain text paragraphs in clear English). Do not include markdown headers, titles, bullet points, preambles, or verification notes.`;
 
-    const models = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+    const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-flash-latest'];
 
     for (const model of models) {
       try {
@@ -407,34 +407,67 @@ CRITICAL SUMMARIZATION RULES:
     userId: string,
     titleOverride?: string | null
   ): Promise<void> {
-    try {
-      console.log(`[AIService] Starting AI summary generation for item ${itemId} (${url})...`);
+    const ENRICHMENT_TIMEOUT_MS = 60000;
+    const abortController = new AbortController();
+    const { signal } = abortController;
+    let isTimedOut = false;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+
+    const checkAborted = () => {
+      if (isTimedOut || signal.aborted) {
+        throw new Error('Pipeline aborted due to timeout');
+      }
+    };
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutTimer = setTimeout(() => {
+        isTimedOut = true;
+        abortController.abort();
+        reject(new Error(`Enrichment pipeline timed out after ${ENRICHMENT_TIMEOUT_MS / 1000}s`));
+      }, ENRICHMENT_TIMEOUT_MS);
+    });
+
+    const executionPromise = (async () => {
+      console.log(`[AIService] Stage 1/5: Starting AI summary generation for item ${itemId} (${url})...`);
 
       const platformInfo = resolvePlatformInfo(url);
       let title = titleOverride || platformInfo.source_name || url;
-      let snippet = '';
+      let existingTranscript = '';
+      let existingDescription = '';
 
       try {
         const { data: row } = await supabase.from('items').select('extracted_text, description, title').eq('id', itemId).maybeSingle();
         if (row) {
           if (row.title && row.title.trim()) title = row.title.trim();
-          snippet = row.extracted_text || row.description || '';
+          existingTranscript = (row.extracted_text || '').trim();
+          existingDescription = (row.description || '').trim();
         }
       } catch { /* non-fatal */ }
+
+      checkAborted();
 
       const isYouTube = platformInfo.source_type === 'youtube' || url.includes('youtube.com') || url.includes('youtu.be');
       const isPdf = platformInfo.source_type === 'pdf' || url.toLowerCase().endsWith('.pdf') || url.toLowerCase().includes('/pdf/');
       let ytDurationSeconds = 0;
+      let snippet = existingTranscript || existingDescription || '';
 
-      // Step 0: Mark processing_status as 'processing'
+      // Stage 2: Mark processing_status as 'processing'
+      console.log(`[AIService] Stage 2/5: Setting processing_status to 'processing' for item ${itemId}`);
       try {
         await supabase.from('items').update({ processing_status: 'processing' }).eq('id', itemId);
-      } catch { /* non-fatal */ }
+      } catch (err: any) {
+        console.warn(`[AIService] Failed to update processing_status to processing: ${err?.message}`);
+      }
 
-      // Step 1: If YouTube URL and no existing transcript, extract video metadata & transcript using YouTubeExtractor
-      if (isYouTube && (!snippet || !snippet.trim())) {
-        console.log(`[PIPELINE LOG] [AI Service] Extracting YouTube video content for ${url}...`);
+      checkAborted();
+
+      // Stage 3: Extract Content (YouTubeExtractor for YouTube if transcript missing)
+      console.log(`[AIService] Stage 3/5: Checking extraction requirements (isYouTube=${isYouTube}, hasExistingTranscript=${Boolean(existingTranscript)})...`);
+      if (isYouTube && !existingTranscript) {
+        console.log(`[PIPELINE LOG] [AI Service] Extracting YouTube video content via YouTubeExtractor for ${url}...`);
         const extractionResult = await YouTubeExtractor.extractYouTubeContent(url);
+
+        checkAborted();
 
         console.log(`[YouTube Extraction Details] URL: ${url} | VideoID: ${extractionResult.videoId} | Method: ${extractionResult.extractionMethod} | yt-dlp Version: ${extractionResult.ytDlpVersion} | Success: ${extractionResult.success} | Captions Found: ${Boolean(extractionResult.transcript)} | Transcript Length: ${extractionResult.transcriptLength} | Stderr/Error: ${extractionResult.error || extractionResult.stderr || 'None'}`);
 
@@ -448,6 +481,8 @@ CRITICAL SUMMARIZATION RULES:
         if (!extractionResult.success || !extractionResult.transcript || !extractionResult.transcript.trim()) {
           const failReason = extractionResult.error || 'No transcript or captions available for video';
           console.warn(`[YouTube Extract] Skipping Gemini summary generation because transcript extraction failed: ${failReason}`);
+
+          if (isTimedOut || signal.aborted) return;
 
           const failPayload: Record<string, any> = {
             processing_status: 'failed',
@@ -467,43 +502,20 @@ CRITICAL SUMMARIZATION RULES:
         snippet = extractionResult.transcript;
       }
 
+      checkAborted();
+
       if (isPdf) {
-        console.log(`[PDF_DIAG] ========================================`);
-        console.log(`[PDF_DIAG] Starting PDF processing path for item ${itemId}`);
-        console.log(`[PDF_DIAG] PDF Source: ${url.startsWith('data:') ? 'Uploaded Buffer' : `Fetched URL (${url})`}`);
-
-        try {
-          let pdfExtractionLib: string | null = null;
-          try {
-            require.resolve('pdf-parse');
-            pdfExtractionLib = 'pdf-parse';
-          } catch (e: any) {
-            console.log(`[PDF_DIAG] PDF extraction library resolution attempt (pdf-parse): ${e?.message || e}`);
-          }
-
-          console.log(`[PDF_DIAG] Extraction library currently in use: ${pdfExtractionLib || 'NONE (No PDF extraction library installed or invoked in backend)'}`);
-          console.log(`[PDF_DIAG] Raw extraction library return value before fallback: ${JSON.stringify(snippet)}`);
-          console.log(`[PDF_DIAG] Raw extracted text length: ${snippet ? snippet.length : 0}`);
-
-          if (!snippet || !snippet.trim()) {
-            console.log(`[PDF_DIAG] [No Text Extracted] Triggered: extracted_text is empty for PDF item (${url})`);
-          }
-
-          console.log(`[PDF_DIAG] PDF Metadata: Page Count = N/A (No parser library active), Has Text Layer = N/A`);
-        } catch (pdfErr: any) {
-          console.error(`[PDF_DIAG] Caught exception during PDF extraction path:`, pdfErr?.message || pdfErr);
-          if (pdfErr?.stack) {
-            console.error(`[PDF_DIAG] Full stack trace:\n${pdfErr.stack}`);
-          }
-        }
-        console.log(`[PDF_DIAG] ========================================`);
+        console.log(`[PDF_DIAG] Processing PDF path for item ${itemId} (${url})`);
       }
 
-      // Step 2: Ensure transcript is in English for storage and AI processing
+      // Ensure transcript is in English for storage and AI processing
       snippet = await translateToEnglishIfNeeded(snippet);
+
+      checkAborted();
 
       if (!snippet || !snippet.trim() || snippet.trim().length < 20) {
         console.warn(`[AIService] Skipping Gemini summary generation because no usable content was extracted for item ${itemId}`);
+        if (isTimedOut || signal.aborted) return;
         const failPayload: Record<string, any> = {
           processing_status: 'failed',
           ai_summary: null,
@@ -516,29 +528,29 @@ CRITICAL SUMMARIZATION RULES:
         return;
       }
 
-      // Step 3: Store extracted English transcript in database if available
-      if (snippet && snippet.trim()) {
-        try {
-          await supabase.from('items').update({
-            extracted_text: snippet,
-            title: title,
-          }).eq('id', itemId);
-          console.log(`[PIPELINE LOG] [Database] Stored English extracted_text (${snippet.length} chars) for item ${itemId}`);
-        } catch (dbErr) {
-          console.warn('[AIService] Failed to store extracted_text in DB:', dbErr);
-        }
+      checkAborted();
+
+      // Store extracted English transcript in database
+      try {
+        await supabase.from('items').update({
+          extracted_text: snippet,
+          title: title,
+        }).eq('id', itemId);
+        console.log(`[PIPELINE LOG] [Database] Stored English extracted_text (${snippet.length} chars) for item ${itemId}`);
+      } catch (dbErr) {
+        console.warn('[AIService] Failed to store extracted_text in DB:', dbErr);
       }
 
-      // Step 4: Calculate estimated time based on content type
+      checkAborted();
+
+      // Calculate estimated time based on content type
       let estimatedReadTime = 5;
       let estimatedTimeMinutes = 5.0;
 
       if (isYouTube && ytDurationSeconds > 0) {
-        // YouTube: real metadata duration
         estimatedReadTime = Math.max(1, Math.ceil(ytDurationSeconds / 60));
         estimatedTimeMinutes = Math.max(1, Math.round((ytDurationSeconds / 60) * 10) / 10);
       } else {
-        // Articles: calculate from extracted text word count (~225 words/min)
         const extractedWordCount = (snippet || '').split(/\s+/).filter(Boolean).length;
         if (extractedWordCount > 0) {
           estimatedReadTime = Math.max(1, Math.ceil(extractedWordCount / 225));
@@ -546,15 +558,18 @@ CRITICAL SUMMARIZATION RULES:
         }
       }
 
-      // Step 5: Log preview of text being sent to Gemini
+      // Stage 4: Generate Gemini summary
+      console.log(`[AIService] Stage 4/5: Generating AI summary via Gemini for item ${itemId}...`);
       const snippetPreview = snippet.substring(0, 150).replace(/\r?\n/g, ' ');
-      console.log(`[PIPELINE LOG] [AI Service] Text being passed to Gemini for item ${itemId} (Full Length: ${snippet.length} chars): "${snippetPreview}..."`);
+      console.log(`[PIPELINE LOG] [AI Service] Text sent to Gemini for item ${itemId} (Full Length: ${snippet.length} chars): "${snippetPreview}..."`);
 
-      // Step 6: Generate abstractive whole-content AI summary via Gemini API
       const result = await this.generateSummary(title, url, platformInfo.source_type, snippet);
+
+      checkAborted();
+
       console.log(`[Gemini Generation Result] ItemID: ${itemId} | Summary Generated Length: ${result.summary ? result.summary.length : 0} chars | Priority: ${result.priority}`);
 
-      // Auto-determine folder, create if missing, and assign collection_id
+      // Auto-determine folder
       let collectionId: string | null = null;
       try {
         const { data: itemRow } = await supabase.from('items').select('collection_id').eq('id', itemId).maybeSingle();
@@ -572,6 +587,10 @@ CRITICAL SUMMARIZATION RULES:
         }, supabase);
       }
 
+      checkAborted();
+
+      // Stage 5: Update record with completed status
+      console.log(`[AIService] Stage 5/5: Updating item record to 'completed' for item ${itemId}...`);
       const updatePayload: Record<string, any> = {
         ai_summary: result.summary,
         notes: null,
@@ -588,7 +607,6 @@ CRITICAL SUMMARIZATION RULES:
       if (platformInfo.source_type) updatePayload.content_type = platformInfo.source_type;
       if (snippet && snippet.trim()) updatePayload.extracted_text = snippet;
 
-      // Step 7: Update Supabase items record cleanly
       const { error } = await supabase.from('items').update(updatePayload).eq('id', itemId);
       if (error) {
         console.warn('[AIService] Supabase update warning:', error.message);
@@ -604,22 +622,31 @@ CRITICAL SUMMARIZATION RULES:
         await supabase.from('items').update(safePayload).eq('id', itemId);
       }
 
-      // Save local metadata
       try {
         await fallbackDb.updateItemMetadata(userId, itemId, { estimated_time_minutes: estimatedTimeMinutes, collection_id: collectionId }, supabase);
       } catch { /* non-fatal */ }
 
       const summaryWordCount = result.summary.split(/\s+/).filter(Boolean).length;
       console.log(`[AIService] AI summary & folder classification completed for item ${itemId} (Folder: ${collectionId}). Summary length: ${result.summary.length} chars (${summaryWordCount} words).`);
+    })();
+
+    try {
+      await Promise.race([executionPromise, timeoutPromise]);
     } catch (err: any) {
-      console.error(`[AIService] processItemEnrichment error for item ${itemId}:`, err);
+      if (!isTimedOut) {
+        console.error(`[AIService] processItemEnrichment error for item ${itemId}:`, err?.message || err);
+      } else {
+        console.warn(`[AIService] processItemEnrichment timed out for item ${itemId} after ${ENRICHMENT_TIMEOUT_MS / 1000}s`);
+      }
       try {
         await supabase.from('items').update({
           processing_status: 'failed',
           ai_summary: null,
-          notes: `[Extraction Failed] Error during enrichment: ${err?.message || err}`,
+          notes: `[Extraction Failed] ${err?.message || err}`,
         }).eq('id', itemId);
       } catch { /* non-fatal */ }
+    } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
     }
   }
 }

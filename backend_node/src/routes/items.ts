@@ -318,6 +318,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
           notes: null,
         }).eq('id', existingItem.id);
 
+        processingLocks.delete(existingItem.id);
         runMockEnrichmentPipeline(existingItem.id, cleanUrl, userId, existingItem.title || title || null).catch(() => {});
       }
 
@@ -1545,16 +1546,22 @@ router.post('/:id/retry', requireAuth, async (req: AuthenticatedRequest, res: Re
     const { data, error } = await supabase.from('items').select('*').eq('id', itemId).eq('user_id', userId).maybeSingle();
     if (error || !data) return res.status(404).json({ detail: 'Item not found' });
 
-    // Reset to queued
+    // Reset to queued & clear previous transcript/error notes for fresh re-extraction
     await supabase.from('items').update({
       processing_status: 'queued',
       ai_summary: null,
       notes: null,
+      extracted_text: null,
     }).eq('id', itemId);
     updateIngestionDebug(itemId, 'queued', 'Item manually enqueued for retry.');
 
-    // Kick off mock pipeline
-    runMockEnrichmentPipeline(itemId, data.url, userId, data.title).catch(() => {});
+    // Clear any stale lock on this item so retry pipeline executes
+    processingLocks.delete(itemId);
+
+    // Kick off enrichment pipeline for existing item
+    runMockEnrichmentPipeline(itemId, data.url, userId, data.title).catch((pipelineErr) => {
+      console.error(`[items/retry] Background pipeline launch error for item ${itemId}:`, pipelineErr);
+    });
 
     const { data: refreshed } = await supabase.from('items').select('*').eq('id', itemId).maybeSingle();
     const merged = await fallbackDb.mergeSingleItemMetadata(userId, refreshed || data);
