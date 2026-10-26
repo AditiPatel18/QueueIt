@@ -70,6 +70,7 @@ jest.mock('../../src/utils/schemaFallback', () => ({
     listCollections: jest.fn().mockResolvedValue([]),
     createCollection: jest.fn().mockResolvedValue({ id: 'col-1', name: 'Test' }),
     getCollections: jest.fn().mockResolvedValue([]),
+    getOptimizedSelectString: jest.fn().mockReturnValue('*'),
   },
   openDb: jest.fn(),
   dbGet: jest.fn(),
@@ -134,6 +135,69 @@ describe('Items API Integration Tests', () => {
       expect(res.body.suggestion).toBeDefined();
       expect(res.body.suggestion.item_id).toBe('rec-item-1');
       expect(res.body.suggestion.title).toBe('Learn TypeScript');
+    });
+  });
+
+  describe('Stale processing recovery in GET /api/items', () => {
+    it('should transition stale items (> 2 mins old) from processing to failed', async () => {
+      const staleTime = new Date(Date.now() - 300000).toISOString(); // 5 minutes ago
+      const staleItem = {
+        id: 'stale-item-1',
+        user_id: 'test-user-id',
+        url: 'https://example.com/stale',
+        title: 'Stale Item',
+        status: 'unread',
+        processing_status: 'processing',
+        created_at: staleTime,
+        added_at: staleTime,
+      };
+
+      const customBuilder = createBuilder();
+      customBuilder.then = function (onfulfilled: any) {
+        return Promise.resolve({ data: [staleItem], count: 1, error: null }).then(onfulfilled);
+      };
+      (supabase.from as jest.Mock).mockReturnValue(customBuilder);
+
+      const res = await request(app)
+        .get('/api/items')
+        .set('Authorization', 'Bearer valid-jwt-token');
+
+      expect(res.status).toBe(200);
+      expect(res.body.items).toBeDefined();
+      expect(res.body.items.length).toBe(1);
+      expect(res.body.items[0].processing_status).toBe('failed');
+      expect(res.body.items[0].notes).toContain('Processing timed out');
+    });
+  });
+
+  describe('GET /api/items/analytics/reading', () => {
+    it('should return reading analytics with correct categories and productivity score', async () => {
+      const completedItem = {
+        id: 'comp-item-1',
+        user_id: 'test-user-id',
+        url: 'https://example.com/done',
+        title: 'Completed Article',
+        status: 'completed',
+        content_type: 'article',
+        estimated_read_time: 10,
+        actual_time_spent: 8.5,
+        completed_at: new Date().toISOString(),
+      };
+
+      const customBuilder = createBuilder();
+      customBuilder.then = function (onfulfilled: any) {
+        return Promise.resolve({ data: [completedItem], count: 1, error: null }).then(onfulfilled);
+      };
+      (supabase.from as jest.Mock).mockReturnValue(customBuilder);
+
+      const res = await request(app)
+        .get('/api/items/analytics/reading')
+        .set('Authorization', 'Bearer valid-jwt-token');
+
+      expect(res.status).toBe(200);
+      expect(res.body.category_distribution).toBeDefined();
+      expect(res.body.productivity_score).toBeGreaterThanOrEqual(0);
+      expect(res.body.reading_time).toBeDefined();
     });
   });
 });

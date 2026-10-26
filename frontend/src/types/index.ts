@@ -25,9 +25,12 @@ export interface QueueItem {
   processing_status: "queued" | "processing" | "completed" | "failed" | "pending_quota" | "ai_pending";
   is_favorite: boolean;
   created_at: string;
+  updated_at?: string | null;
+  added_at?: string | null;
   completed_at?: string | null;
   audio_url?: string | null;
   collection_id?: string | null;
+  notes?: string | null;
   read_progress: number;
   actual_time_spent?: number | null;
   estimated_time_minutes?: number | null;

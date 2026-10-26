@@ -82,6 +82,8 @@ static/
 backend/test_api_v2.py
 backend/test_yt_simple.py
 backend/find_user.py
+scratch/
+**/scratch/
 
 # ================================
 # Test Coverage

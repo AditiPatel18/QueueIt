@@ -40,10 +40,18 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
-  // Refresh the session — this is critical for keeping auth state alive
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Refresh the session with a 3-second timeout guard to prevent 504 MIDDLEWARE_INVOCATION_TIMEOUT on DNS/network errors
+  let user = null;
+  try {
+    const authPromise = supabase.auth.getUser();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Supabase auth timeout in middleware")), 3000)
+    );
+    const { data } = await Promise.race([authPromise, timeoutPromise]);
+    user = data?.user ?? null;
+  } catch (err: any) {
+    console.warn(`[middleware] Supabase auth check failed or timed out: ${err?.message || err}`);
+  }
 
   console.log(`[middleware] Path: ${request.nextUrl.pathname}, User: ${user ? user.email : "null"}`);
 

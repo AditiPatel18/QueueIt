@@ -84,12 +84,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://xgifnzhpfexksoxavcyc.supabase.co";
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_OtLsF_q1V1Nk-aK_kpwX_g_bl85-K_O";
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     const supabaseServiceKey =
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.SUPABASE_SECRET_KEY ||
       process.env.SUPABASE_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("[API /items] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      return NextResponse.json(
+        { detail: "Server environment is not properly configured." },
+        { status: 500, headers: corsHeaders }
+      );
+    }
 
     // 1. Authenticate user from Bearer token
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {

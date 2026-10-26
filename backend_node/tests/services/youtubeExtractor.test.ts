@@ -102,11 +102,12 @@ This is a test transcript line.`;
 
       await AIService.processItemEnrichment('test-failed-item-id', invalidUrl, 'user-123');
 
-      // Verify Supabase update was called with processing_status: 'failed' and notes containing [Extraction Failed]
+      // Verify Supabase update was called with processing_status: 'failed' without non-existent notes column
       const updateCalls = (supabase.from('items').update as jest.Mock).mock.calls;
       const failedUpdate = updateCalls.find(c => c[0] && c[0].processing_status === 'failed');
       expect(failedUpdate).toBeDefined();
-      expect(failedUpdate[0].notes).toContain('[Extraction Failed]');
+      expect(failedUpdate[0].processing_status).toBe('failed');
+      expect(failedUpdate[0]).not.toHaveProperty('notes');
       expect(failedUpdate[0].ai_summary).toBeNull();
     });
 

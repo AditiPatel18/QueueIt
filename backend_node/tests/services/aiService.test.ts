@@ -200,6 +200,65 @@ describe('AIService Unit Tests', () => {
       expect(spy).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('Supabase Schema compatibility & notes column handling', () => {
+    it('should NOT pass notes column to Supabase when extraction fails', async () => {
+      const { supabase } = require('../../src/config/supabase');
+      const updateMock = jest.fn().mockReturnThis();
+      (supabase.from as jest.Mock).mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        update: updateMock,
+        eq: jest.fn().mockReturnThis(),
+        maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+      });
+
+      jest.spyOn(YouTubeExtractor, 'extractYouTubeContent').mockResolvedValueOnce({
+        success: false,
+        videoId: 'fail_vid',
+        url: 'https://www.youtube.com/watch?v=fail_vid',
+        extractionMethod: 'cli',
+        ytDlpVersion: '2026.08.19',
+        transcriptLength: 0,
+        error: 'Video unavailable',
+      });
+
+      await AIService.processItemEnrichment('test-fail-item', 'https://www.youtube.com/watch?v=fail_vid', 'user-123');
+
+      expect(updateMock).toHaveBeenCalled();
+      const failCall = updateMock.mock.calls.find(call => call[0].processing_status === 'failed');
+      expect(failCall).toBeDefined();
+      expect(failCall[0]).not.toHaveProperty('notes');
+      expect(failCall[0].processing_status).toBe('failed');
+    });
+
+    it('should NOT pass notes column to Supabase when enrichment completes successfully', async () => {
+      const { supabase } = require('../../src/config/supabase');
+      const updateMock = jest.fn().mockReturnThis();
+      (supabase.from as jest.Mock).mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        update: updateMock,
+        eq: jest.fn().mockReturnThis(),
+        maybeSingle: jest.fn().mockResolvedValue({ data: { extracted_text: 'Valid existing text content with enough words for summary testing...' }, error: null }),
+      });
+
+      const mockSummary = 'Valid generated summary about quantum computing with high quality.';
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          candidates: [{ content: { parts: [{ text: mockSummary }] } }]
+        }),
+      });
+
+      await AIService.processItemEnrichment('test-success-item', 'https://example.com/article', 'user-123');
+
+      expect(updateMock).toHaveBeenCalled();
+      const successCall = updateMock.mock.calls.find(call => call[0].processing_status === 'completed');
+      expect(successCall).toBeDefined();
+      expect(successCall[0]).not.toHaveProperty('notes');
+      expect(successCall[0].processing_status).toBe('completed');
+    });
+  });
 });
 
 

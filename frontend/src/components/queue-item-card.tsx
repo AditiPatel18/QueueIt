@@ -449,6 +449,8 @@ export const QueueItemCard = memo(function QueueItemCard({
   };
 
   const currentFolder = collections.find((c) => c.id === item.collection_id);
+  const itemDate = item.updated_at ? new Date(item.updated_at).getTime() : (item.added_at ? new Date(item.added_at).getTime() : (item.created_at ? new Date(item.created_at).getTime() : 0));
+  const isStaleProcessing = (item.processing_status === "queued" || item.processing_status === "processing") && itemDate > 0 && (Date.now() - itemDate > 120000);
 
   return (
     <Card
@@ -620,7 +622,25 @@ export const QueueItemCard = memo(function QueueItemCard({
                 </div>
 
                 {/* AI Summary Block */}
-                {(item.processing_status === "queued" || item.processing_status === "processing") ? (
+                {isStaleProcessing ? (
+                  <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center justify-between bg-amber-500/5 rounded-lg p-2 border border-amber-500/15">
+                    <div className="flex gap-2 items-center min-w-0 flex-1">
+                      <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+                      <p className="leading-relaxed font-semibold text-amber-600 dark:text-amber-400 truncate">
+                        Summary generation timed out.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleRetryAI}
+                      className="h-7 text-[10px] uppercase font-bold border-amber-500/30 text-amber-500 hover:bg-amber-500/10 cursor-pointer shrink-0"
+                      disabled={isRetryingAI}
+                    >
+                      {isRetryingAI ? "Retrying..." : "Retry AI"}
+                    </Button>
+                  </div>
+                ) : (item.processing_status === "queued" || item.processing_status === "processing") ? (
                   <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-purple-500/5 rounded-lg p-2 border border-purple-500/10 animate-pulse">
                     <Loader2 className="h-4 w-4 text-purple-400 animate-spin shrink-0" />
                     <p className="leading-relaxed font-semibold text-purple-400">

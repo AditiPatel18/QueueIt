@@ -315,8 +315,10 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
         await supabase.from('items').update({
           processing_status: 'queued',
           ai_summary: null,
-          notes: null,
         }).eq('id', existingItem.id);
+        try {
+          await fallbackDb.updateItemMetadata(userId, existingItem.id, { notes: null }, supabase);
+        } catch { /* non-fatal */ }
 
         processingLocks.delete(existingItem.id);
         runMockEnrichmentPipeline(existingItem.id, cleanUrl, userId, existingItem.title || title || null).catch(() => {});
@@ -364,7 +366,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
       processing_status: 'queued',
       is_favorite: false,
     };
-    if (resolvedCollectionId) itemData.collection_id = resolvedCollectionId;
+    if (resolvedCollectionId && (fallbackDb as any).has_collection_id) itemData.collection_id = resolvedCollectionId;
     if (transcriptText && typeof transcriptText === 'string' && transcriptText.trim()) {
       itemData.extracted_text = transcriptText.trim();
     }
@@ -382,7 +384,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
         ai_summary: null, priority_score: 50.0, status: 'unread',
         processing_status: 'queued', is_favorite: false,
       };
-      if (resolvedCollectionId) safeData.collection_id = resolvedCollectionId;
+      if (resolvedCollectionId && (fallbackDb as any).has_collection_id) safeData.collection_id = resolvedCollectionId;
       if (transcriptText && typeof transcriptText === 'string' && transcriptText.trim()) {
         safeData.extracted_text = transcriptText.trim();
       }
@@ -806,7 +808,7 @@ router.get('/analytics/export', requireAuth, async (req: AuthenticatedRequest, r
     rows.push(headers.map(escapeCSVCell).join(','));
 
     for (const item of items) {
-      const estMin = item.estimated_time_minutes || ((item.estimated_read_time || 300) / 60);
+      const estMin = item.estimated_time_minutes != null ? parseFloat(item.estimated_time_minutes) : (item.estimated_read_time != null ? parseFloat(item.estimated_read_time) : 5.0);
       const actMin = item.actual_time_spent ?? 0;
       const tagsStr = Array.isArray(item.tags) ? item.tags.join(', ') : (item.tags || '');
       const cat = item.source_type || item.content_type || 'article';
@@ -860,7 +862,8 @@ router.get('/analytics/reading', requireAuth, async (req: AuthenticatedRequest, 
     const completionsByDay: Record<number, number> = {};
     last30DaysList.forEach(d => { timeByDay[d.getTime()] = 0; completionsByDay[d.getTime()] = 0; });
 
-    const startOfWeekDate = new Date(todayTime - today.getUTCDay() * 86400000 + 86400000); // Monday
+    const dayOfWeek = today.getUTCDay() === 0 ? 7 : today.getUTCDay();
+    const startOfWeekDate = new Date(todayTime - (dayOfWeek - 1) * 86400000); // Monday
     const last12Weeks = Array.from({ length: 12 }, (_, i) => new Date(startOfWeekDate.getTime() - (11 - i) * 7 * 86400000));
     const timeByWeek: Record<number, number> = {};
     const completionsByWeek: Record<number, number> = {};
@@ -884,7 +887,7 @@ router.get('/analytics/reading', requireAuth, async (req: AuthenticatedRequest, 
     for (const item of items) {
       if (item.status !== 'completed') continue;
       const t = item.actual_time_spent;
-      const timeSpent = t != null ? parseFloat(t) : parseFloat(item.estimated_time_minutes || ((item.estimated_read_time || 300) / 60.0));
+      const timeSpent = t != null ? parseFloat(t) : (item.estimated_time_minutes != null ? parseFloat(item.estimated_time_minutes) : (item.estimated_read_time != null ? parseFloat(item.estimated_read_time) : 5.0));
 
       totalCompleted++;
       totalTimeSpent += timeSpent;
@@ -951,7 +954,7 @@ router.get('/analytics/reading', requireAuth, async (req: AuthenticatedRequest, 
     for (const item of completedItems) {
       const cat = ((item.source_type || item.content_type || 'article') as string).toLowerCase();
       const t = item.actual_time_spent;
-      const ts = t != null ? parseFloat(t) : parseFloat(item.estimated_time_minutes || ((item.estimated_read_time || 300) / 60.0));
+      const ts = t != null ? parseFloat(t) : (item.estimated_time_minutes != null ? parseFloat(item.estimated_time_minutes) : (item.estimated_read_time != null ? parseFloat(item.estimated_read_time) : 5.0));
       catCounts[cat] = (catCounts[cat] || 0) + 1;
       catTime[cat] = (catTime[cat] || 0) + ts;
     }
@@ -981,7 +984,7 @@ router.get('/analytics/reading', requireAuth, async (req: AuthenticatedRequest, 
     if (!mostViewedCategories.length) mostViewedCategories = [{ category: 'Article', views: 0 }];
 
     // Productivity score
-    const totalItemsCount = items.length;
+    const totalItemsCount = items.filter(i => ['unread', 'reading', 'completed'].includes(i.status)).length || items.length;
     const completionRate = totalItemsCount > 0 ? (totalCompleted / totalItemsCount) * 100 : 0.0;
     const user = req.user || {};
     const userMeta = (user as any).user_metadata || {};
@@ -1087,14 +1090,18 @@ router.post('/bulk', requireAuth, async (req: AuthenticatedRequest, res: Respons
           const patch: Record<string, any> = { status };
           if (status === 'completed') {
             patch.completed_at = new Date().toISOString();
-            patch.read_progress = 100;
           } else if (status === 'unread') {
             patch.completed_at = null;
-            patch.read_progress = 0;
           }
           await supabase.from('items').update(patch).eq('id', id).eq('user_id', userId);
+          const prog = status === 'completed' ? 100 : (status === 'unread' ? 0 : undefined);
+          if (prog !== undefined) {
+            await fallbackDb.updateItemMetadata(userId, id, { read_progress: prog }, supabase);
+          }
         } else if (action === 'move' && collection_id !== undefined) {
-          await supabase.from('items').update({ collection_id: targetColId }).eq('id', id).eq('user_id', userId);
+          if ((fallbackDb as any).has_collection_id) {
+            await supabase.from('items').update({ collection_id: targetColId }).eq('id', id).eq('user_id', userId);
+          }
           await fallbackDb.updateItemMetadata(userId, id, { collection_id: targetColId }, supabase);
         } else if (action === 'favorite' && is_favorite !== undefined) {
           await supabase.from('items').update({ is_favorite }).eq('id', id).eq('user_id', userId);
@@ -1146,7 +1153,9 @@ router.post('/reclassify', requireAuth, async (req: AuthenticatedRequest, res: R
       }, supabase);
 
       if (bestMatchId && bestMatchId !== item.collection_id) {
-        await supabase.from('items').update({ collection_id: bestMatchId }).eq('id', item.id).eq('user_id', userId);
+        if ((fallbackDb as any).has_collection_id) {
+          await supabase.from('items').update({ collection_id: bestMatchId }).eq('id', item.id).eq('user_id', userId);
+        }
         await fallbackDb.updateItemMetadata(userId, item.id, { collection_id: bestMatchId }, supabase);
         reclassifiedCount++;
         reclassifiedItems.push({ id: item.id, collection_id: bestMatchId });
@@ -1319,6 +1328,28 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     let items = (data || []).map(itemToResponse);
     items = await fallbackDb.mergeItemsMetadata(userId, items);
 
+    // Auto-heal stale processing/queued items older than 2 minutes (prevents indefinite loading cards)
+    const STALE_PROCESSING_THRESHOLD_MS = 120000;
+    const nowTime = Date.now();
+    for (const item of items) {
+      if (item.processing_status === 'processing' || item.processing_status === 'queued') {
+        if (processingLocks.has(item.id)) {
+          // Actively executing in this process; do not mark as failed
+          continue;
+        }
+        const itemTime = item.updated_at ? new Date(item.updated_at).getTime() : (item.added_at ? new Date(item.added_at).getTime() : (item.created_at ? new Date(item.created_at).getTime() : 0));
+        if (itemTime > 0 && (nowTime - itemTime > STALE_PROCESSING_THRESHOLD_MS)) {
+          console.warn(`[items] Detected stale processing item ${item.id} (${Math.round((nowTime - itemTime)/1000)}s old). Auto-recovering to failed.`);
+          item.processing_status = 'failed';
+          item.notes = item.notes || 'Processing timed out. Click Retry AI to re-extract.';
+          try {
+            Promise.resolve(supabase.from('items').update({ processing_status: 'failed', ai_summary: null }).eq('id', item.id)).catch(() => {});
+            Promise.resolve(fallbackDb.updateItemMetadata(userId, item.id, { notes: item.notes }, supabase)).catch(() => {});
+          } catch { /* non-fatal */ }
+        }
+      }
+    }
+
     if (applyCollectionFilterInMemory) {
       if (collection_id === 'none' || collection_id === 'null') {
         items = items.filter(i => !i.collection_id);
@@ -1403,10 +1434,13 @@ router.put('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response)
       }
     }
 
-    // Metadata field routing — preserve collection_id for Supabase items column
-    const metaOnly = ['read_progress', 'full_summary', 'actual_time_spent'];
+    // Metadata field routing — strip unmapped columns from remoteData
+    const metaOnly = ['read_progress', 'full_summary', 'actual_time_spent', 'notes', 'estimated_time_minutes'];
+    if (!(fallbackDb as any).has_collection_id) {
+      metaOnly.push('collection_id');
+    }
     const remoteData: Record<string, any> = { ...updateData };
-    metaOnly.forEach(f => { if (f in localUpdates) delete remoteData[f]; });
+    metaOnly.forEach(f => { delete remoteData[f]; });
 
     if (Object.keys(localUpdates).length) {
       await fallbackDb.updateItemMetadata(userId, itemId, localUpdates, supabase);
@@ -1490,7 +1524,7 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res: Respons
     }
 
     // Route metadata fields — strip unmapped columns ONLY if missing in schema
-    ['read_progress', 'actual_time_spent'].forEach(f => {
+    ['read_progress', 'actual_time_spent', 'notes', 'full_summary', 'estimated_time_minutes', 'collection_id'].forEach(f => {
       if (!(fallbackDb as any)[`has_${f}`]) {
         delete updateData[f];
       }
@@ -1550,9 +1584,11 @@ router.post('/:id/retry', requireAuth, async (req: AuthenticatedRequest, res: Re
     await supabase.from('items').update({
       processing_status: 'queued',
       ai_summary: null,
-      notes: null,
       extracted_text: null,
     }).eq('id', itemId);
+    try {
+      await fallbackDb.updateItemMetadata(userId, itemId, { notes: null }, supabase);
+    } catch { /* non-fatal */ }
     updateIngestionDebug(itemId, 'queued', 'Item manually enqueued for retry.');
 
     // Clear any stale lock on this item so retry pipeline executes

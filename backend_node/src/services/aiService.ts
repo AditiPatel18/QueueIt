@@ -676,6 +676,8 @@ ${preparedContent}
     };
   }
 
+  private static activeEnrichmentRuns = new Map<string, number>();
+
   /**
    * Run background enrichment pipeline for a newly saved queue item.
    */
@@ -686,6 +688,8 @@ ${preparedContent}
     titleOverride?: string | null
   ): Promise<void> {
     const ENRICHMENT_TIMEOUT_MS = 60000;
+    const currentRunId = Date.now() + Math.random();
+    AIService.activeEnrichmentRuns.set(itemId, currentRunId);
     const abortController = new AbortController();
     const { signal } = abortController;
     let isTimedOut = false;
@@ -694,6 +698,9 @@ ${preparedContent}
     const checkAborted = () => {
       if (isTimedOut || signal.aborted) {
         throw new Error('Pipeline aborted due to timeout');
+      }
+      if (AIService.activeEnrichmentRuns.get(itemId) !== currentRunId) {
+        throw new Error('Pipeline aborted: superseded by a newer retry request');
       }
     };
 
@@ -758,7 +765,6 @@ ${preparedContent}
             const failPayload: Record<string, any> = {
               processing_status: 'failed',
               ai_summary: null,
-              notes: `[Extraction Failed] ${failReason}`,
               title,
             };
             if (ytDurationSeconds > 0) failPayload.duration_seconds = ytDurationSeconds;
@@ -790,7 +796,6 @@ ${preparedContent}
         const failPayload: Record<string, any> = {
           processing_status: 'failed',
           ai_summary: null,
-          notes: '[Extraction Failed] No usable text content could be extracted from source.',
         };
         await supabase.from('items').update(failPayload).eq('id', itemId);
         try {
@@ -848,7 +853,6 @@ ${preparedContent}
         const failPayload: Record<string, any> = {
           processing_status: 'failed',
           ai_summary: null,
-          notes: `[AI Generation Failed] ${failReason}`,
         };
         await supabase.from('items').update(failPayload).eq('id', itemId);
         try {
@@ -879,10 +883,14 @@ ${preparedContent}
 
       checkAborted();
 
-      // STAGE 5: saved
+      // STAGE 5: saved (guard against writing if timed out or superseded by newer run)
+      if (isTimedOut || signal.aborted || AIService.activeEnrichmentRuns.get(itemId) !== currentRunId) {
+        console.warn(`[AIService] Discarding late summary save for item ${itemId} because operation timed out or was superseded.`);
+        return;
+      }
+
       const updatePayload: Record<string, any> = {
         ai_summary: result.summary,
-        notes: null,
         tags: result.tags,
         processing_status: 'completed',
         estimated_read_time: estimatedReadTime,
@@ -901,7 +909,6 @@ ${preparedContent}
         console.warn('[AIService] Supabase update warning:', error.message);
         const safePayload: Record<string, any> = {
           ai_summary: result.summary,
-          notes: null,
           tags: result.tags,
           processing_status: 'completed',
           priority_score: result.priority,
@@ -912,16 +919,24 @@ ${preparedContent}
       }
 
       try {
-        await fallbackDb.updateItemMetadata(userId, itemId, { estimated_time_minutes: estimatedTimeMinutes, collection_id: collectionId }, supabase);
+        await fallbackDb.updateItemMetadata(userId, itemId, { estimated_time_minutes: estimatedTimeMinutes, collection_id: collectionId, notes: null }, supabase);
       } catch { /* non-fatal */ }
 
       const summaryWordCount = result.summary.split(/\s+/).filter(Boolean).length;
       console.log(`[AIService] Stage 5: saved item ${itemId} as completed (Summary length: ${result.summary.length} chars, ${summaryWordCount} words)`);
-    })();
+    })().catch((internalErr) => {
+      if (!isTimedOut && !signal.aborted) {
+        console.error(`[AIService] Uncaught error inside enrichment execution for item ${itemId}:`, internalErr?.message || internalErr);
+      }
+    });
 
     try {
       await Promise.race([executionPromise, timeoutPromise]);
     } catch (err: any) {
+      if (AIService.activeEnrichmentRuns.get(itemId) !== currentRunId) {
+        console.warn(`[AIService] Discarding error handling for item ${itemId} because it was superseded by a newer run.`);
+        return;
+      }
       if (!isTimedOut) {
         console.error(`[AIService] processItemEnrichment error for item ${itemId}:`, err?.message || err);
       } else {
@@ -931,11 +946,14 @@ ${preparedContent}
         await supabase.from('items').update({
           processing_status: 'failed',
           ai_summary: null,
-          notes: `[Extraction Failed] ${err?.message || err}`,
         }).eq('id', itemId);
+        await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[Extraction Failed] ${err?.message || err}` }, supabase);
       } catch { /* non-fatal */ }
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (AIService.activeEnrichmentRuns.get(itemId) === currentRunId) {
+        AIService.activeEnrichmentRuns.delete(itemId);
+      }
     }
   }
 }
