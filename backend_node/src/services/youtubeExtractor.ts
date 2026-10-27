@@ -85,7 +85,7 @@ export class YouTubeExtractor {
   }
 
   public static getPlayerClient(): string | null {
-    return process.env.YTDLP_PLAYER_CLIENT || 'android';
+    return process.env.YTDLP_PLAYER_CLIENT || null;
   }
 
   public static async getYtDlpVersion(): Promise<string> {
@@ -246,13 +246,8 @@ export class YouTubeExtractor {
     let title = '';
     let durationSeconds = 0;
 
-    try {
-      const metaRes = await execFileAsync(ytDlpPath, metaArgs, {
-        timeout: metaTimeoutMs,
-        signal: options?.signal,
-      });
-      const metaOutput = (metaRes.stdout || '').trim();
-      const parts = metaOutput.split('|||');
+    const parseMetaOutput = (metaOutput: string) => {
+      const parts = metaOutput.trim().split('|||');
       if (parts.length >= 3) {
         durationSeconds = parseInt(parts[1], 10) || 0;
         title = parts.slice(2).join('|||').trim();
@@ -260,19 +255,53 @@ export class YouTubeExtractor {
         durationSeconds = parseInt(parts[0], 10) || 0;
         title = parts[1].trim();
       }
-      console.log(`${logPrefix} [Stage: YOUTUBE_META_COMPLETED] Title: "${title}", Duration: ${durationSeconds}s`);
+    };
+
+    try {
+      const metaRes = await execFileAsync(ytDlpPath, metaArgs, {
+        timeout: metaTimeoutMs,
+        signal: options?.signal,
+      });
+      parseMetaOutput(metaRes.stdout || '');
+      if (title) {
+        console.log(`${logPrefix} [Stage: YOUTUBE_META_COMPLETED] Title: "${title}", Duration: ${durationSeconds}s`);
+      }
     } catch (metaErr: any) {
       const stderr = metaErr?.stderr ? String(metaErr.stderr).trim() : metaErr?.message || String(metaErr);
       console.warn(`${logPrefix} Metadata extraction note: ${stderr.substring(0, 300)}`);
 
+      // Fallback: If playerClient was passed and failed, try standard default args immediately
+      if (playerClient) {
+        try {
+          const fallbackMetaArgs = [
+            '--print', '%(id)s|||%(duration)s|||%(title)s',
+            '--no-playlist',
+            '--socket-timeout', '10',
+            '--skip-download',
+            '--no-warnings',
+            url,
+          ];
+          const fallbackRes = await execFileAsync(ytDlpPath, fallbackMetaArgs, {
+            timeout: metaTimeoutMs,
+            signal: options?.signal,
+          });
+          parseMetaOutput(fallbackRes.stdout || '');
+          if (title) {
+            console.log(`${logPrefix} [Stage: YOUTUBE_META_COMPLETED] (Fallback) Title: "${title}", Duration: ${durationSeconds}s`);
+          }
+        } catch { /* proceed to oembed fallback */ }
+      }
+
       const is429 = stderr.includes('429') || stderr.toLowerCase().includes('too many requests');
       const is403 = stderr.includes('403') || stderr.toLowerCase().includes('forbidden') || stderr.toLowerCase().includes('please sign in');
+      const isBot = stderr.toLowerCase().includes('bot') || stderr.toLowerCase().includes('po_token') || stderr.toLowerCase().includes('sign in to confirm');
       const isUnavailable = stderr.toLowerCase().includes('unavailable') || stderr.toLowerCase().includes('private video');
 
-      if (is429 || is403 || isUnavailable) {
+      if (is429 || is403 || isBot || isUnavailable) {
         this.recordFailure(videoId, is429);
         let userMsg = 'YouTube video extraction failed';
-        if (is429) userMsg = 'YouTube rate limit reached (HTTP 429). Please retry shortly.';
+        if (isBot) userMsg = 'YouTube anti-bot verification active for this video.';
+        else if (is429) userMsg = 'YouTube rate limit reached (HTTP 429). Please retry shortly.';
         else if (is403) userMsg = 'YouTube video requires sign-in or is age/region-restricted (HTTP 403).';
         else if (isUnavailable) userMsg = 'YouTube video is unavailable or private.';
 
@@ -288,7 +317,22 @@ export class YouTubeExtractor {
           isRateLimited: is429,
         };
       }
-      // Non-fatal metadata error; proceed to attempt subtitle extraction
+    }
+
+    // Fast oEmbed fallback for title if yt-dlp metadata returned empty
+    if (!title) {
+      try {
+        const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (oembedRes.ok) {
+          const oembedData: any = await oembedRes.json();
+          if (oembedData?.title) {
+            title = String(oembedData.title).trim();
+            console.log(`${logPrefix} [Stage: YOUTUBE_META_OEMBED] Title from oembed: "${title}"`);
+          }
+        }
+      } catch { /* non-fatal */ }
     }
 
     if (options?.signal?.aborted) {
@@ -343,7 +387,7 @@ export class YouTubeExtractor {
         const createdFiles = fs.readdirSync(tempDir).filter((f) => f.startsWith(prefixBase));
         if (createdFiles.length > 0) {
           const enFile = createdFiles.find((f) => f.includes('.en.') || f.endsWith('.en.vtt'));
-          const hiFile = createdFiles.find((f) => f.includes('.hi.') || f.endsWith('.hi.vtt'));
+          const hiFile = createdFiles.find((f) => f.includes('.hi.') || f.endsWith('.hi.vtt') || f.includes('.hi-orig.') || f.endsWith('.hi-orig.vtt'));
           const chosenFile = enFile || hiFile || createdFiles[0];
           rawCaptionContent = fs.readFileSync(path.join(tempDir, chosenFile), 'utf-8');
 
@@ -354,6 +398,55 @@ export class YouTubeExtractor {
       }
     } catch (fsErr) {
       console.warn(`${logPrefix} File cleanup error:`, fsErr);
+    }
+
+    // Fallback subtitle extraction: If primary sub request yielded no files (e.g. 429 on auto-translate or no English track), try native original captions
+    if (!rawCaptionContent && !options?.signal?.aborted) {
+      console.log(`${logPrefix} [Stage: YOUTUBE_SUBTITLES_FALLBACK] Primary subs unavailable. Attempting native captions (hi-orig,hi)...`);
+      const fbPrefix = path.join(tempDir, `yt_sub_fb_${videoId}_${Date.now()}`);
+      const fallbackSubArgs = [
+        '--write-sub',
+        '--write-auto-sub',
+        '--sub-lang', 'hi-orig,hi,en.*',
+        '--skip-download',
+        '--sub-format', 'vtt',
+        '--no-playlist',
+        '--socket-timeout', '10',
+        '--no-abort-on-error',
+        '-o', `${fbPrefix}.%(ext)s`,
+      ];
+      if (playerClient) {
+        fallbackSubArgs.push('--extractor-args', `youtube:player_client=${playerClient}`);
+      }
+      fallbackSubArgs.push(url);
+
+      try {
+        await execFileAsync(ytDlpPath, fallbackSubArgs, {
+          timeout: subTimeoutMs,
+          signal: options?.signal,
+        });
+      } catch (fbErr: any) {
+        console.log(`${logPrefix} Fallback subtitle process note: ${fbErr?.message || fbErr}`);
+      }
+
+      try {
+        if (fs.existsSync(tempDir)) {
+          const fbPrefixBase = path.basename(fbPrefix);
+          const fbFiles = fs.readdirSync(tempDir).filter((f) => f.startsWith(fbPrefixBase));
+          if (fbFiles.length > 0) {
+            const enFile = fbFiles.find((f) => f.includes('.en.') || f.endsWith('.en.vtt'));
+            const hiFile = fbFiles.find((f) => f.includes('.hi.') || f.endsWith('.hi.vtt') || f.includes('.hi-orig.') || f.endsWith('.hi-orig.vtt'));
+            const chosenFile = enFile || hiFile || fbFiles[0];
+            rawCaptionContent = fs.readFileSync(path.join(tempDir, chosenFile), 'utf-8');
+
+            for (const f of fbFiles) {
+              try { fs.unlinkSync(path.join(tempDir, f)); } catch {}
+            }
+          }
+        }
+      } catch (fsErr) {
+        console.warn(`${logPrefix} Fallback file cleanup error:`, fsErr);
+      }
     }
 
     const cleanedTranscript = this.cleanVttCaptionText(rawCaptionContent);
