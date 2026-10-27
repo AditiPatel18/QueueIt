@@ -45,17 +45,23 @@ export class YouTubeExtractor {
     const localBinLinux = path.join(rootDir, 'bin', 'yt-dlp');
     const localBinWin = path.join(rootDir, 'bin', 'yt-dlp.exe');
 
-    if (fs.existsSync(localBinLinux)) {
-      return localBinLinux;
+    if (process.platform === 'win32') {
+      if (fs.existsSync(localBinWin)) {
+        return localBinWin;
+      }
+      return 'yt-dlp';
+    } else {
+      if (fs.existsSync('/opt/yt-dlp-venv/bin/yt-dlp')) {
+        return '/opt/yt-dlp-venv/bin/yt-dlp';
+      }
+      if (fs.existsSync('/usr/local/bin/yt-dlp')) {
+        return '/usr/local/bin/yt-dlp';
+      }
+      if (fs.existsSync(localBinLinux)) {
+        return localBinLinux;
+      }
+      return 'yt-dlp';
     }
-    if (fs.existsSync(localBinWin)) {
-      return localBinWin;
-    }
-    if (process.platform !== 'win32' && fs.existsSync('/usr/local/bin/yt-dlp')) {
-      return '/usr/local/bin/yt-dlp';
-    }
-
-    return 'yt-dlp';
   }
 
   public static getYtDlpPath(): string {
@@ -63,15 +69,23 @@ export class YouTubeExtractor {
   }
 
   public static getSubLangs(): string {
-    return process.env.YTDLP_SUB_LANGS || 'en.*,en,hi.*,hi';
+    return process.env.YTDLP_SUB_LANGS || 'en,en-US,en-GB';
+  }
+
+  public static getMetadataTimeoutMs(): number {
+    return parseInt(process.env.YTDLP_META_TIMEOUT_MS || '12000', 10);
+  }
+
+  public static getSubtitlesTimeoutMs(): number {
+    return parseInt(process.env.YTDLP_SUB_TIMEOUT_MS || '18000', 10);
   }
 
   public static getTimeoutMs(): number {
-    return parseInt(process.env.YTDLP_TIMEOUT_MS || '35000', 10);
+    return parseInt(process.env.YTDLP_TIMEOUT_MS || '25000', 10);
   }
 
   public static getPlayerClient(): string | null {
-    return process.env.YTDLP_PLAYER_CLIENT || null;
+    return process.env.YTDLP_PLAYER_CLIENT || 'android';
   }
 
   public static async getYtDlpVersion(): Promise<string> {
@@ -173,9 +187,13 @@ export class YouTubeExtractor {
     return textLines.join(' ').replace(/\s+/g, ' ').trim();
   }
 
-  public static async extractYouTubeContent(url: string): Promise<YouTubeExtractionResult> {
+  public static async extractYouTubeContent(
+    url: string,
+    options?: { signal?: AbortSignal; itemId?: string }
+  ): Promise<YouTubeExtractionResult> {
     const videoId = this.extractVideoId(url);
     const ytDlpVersion = await this.getYtDlpVersion();
+    const logPrefix = options?.itemId ? `[Item ${options.itemId}] [YouTube]` : `[YouTube Extract]`;
 
     if (!videoId) {
       return {
@@ -192,7 +210,7 @@ export class YouTubeExtractor {
     const { inBackoff, backoffUntil } = this.isVideoInBackoff(videoId);
     if (inBackoff && backoffUntil) {
       const waitSec = Math.ceil((backoffUntil - Date.now()) / 1000);
-      console.log(`[YouTube Extract] Skipping videoId=${videoId} due to active exponential backoff (${waitSec}s remaining).`);
+      console.log(`${logPrefix} Skipping videoId=${videoId} due to active exponential backoff (${waitSec}s remaining).`);
       return {
         success: false,
         videoId,
@@ -205,242 +223,144 @@ export class YouTubeExtractor {
       };
     }
 
-    console.log(`[YouTube Extract] ===== Starting YouTube Extraction =====`);
-    console.log(`[YouTube Extract] Video URL: ${url}`);
-    console.log(`[YouTube Extract] Video ID: ${videoId}`);
-    console.log(`[YouTube Extract] yt-dlp Version: ${ytDlpVersion}`);
-
     const ytDlpPath = this.getYtDlpPath();
     const subLangs = this.getSubLangs();
-    const timeoutMs = this.getTimeoutMs();
+    const metaTimeoutMs = this.getMetadataTimeoutMs();
+    const subTimeoutMs = this.getSubtitlesTimeoutMs();
     const playerClient = this.getPlayerClient();
 
-    const args = ['--dump-json', '--skip-download', '--no-warnings'];
+    // ── STAGE 1: METADATA EXTRACTION (Bounded to 12s) ──────────────────────
+    console.log(`${logPrefix} [Stage: YOUTUBE_META_STARTED] Video ID: ${videoId}, yt-dlp: ${ytDlpPath} (${ytDlpVersion})`);
+    const metaArgs = [
+      '--print', '%(id)s|||%(duration)s|||%(title)s',
+      '--no-playlist',
+      '--socket-timeout', '10',
+      '--skip-download',
+      '--no-warnings',
+    ];
     if (playerClient) {
-      args.push('--extractor-args', `youtube:player_client=${playerClient}`);
+      metaArgs.push('--extractor-args', `youtube:player_client=${playerClient}`);
     }
-    args.push(url);
+    metaArgs.push(url);
 
-    let stdout = '';
-    let stderr = '';
-    let execError: any = null;
+    let title = '';
+    let durationSeconds = 0;
 
     try {
-      console.log(`[YouTube Extract] Method: yt-dlp JSON metadata dump`);
-      const res = await execFileAsync(ytDlpPath, args, { timeout: timeoutMs, maxBuffer: 15 * 1024 * 1024 });
-      stdout = res.stdout || '';
-      stderr = res.stderr || '';
-    } catch (err: any) {
-      execError = err;
-      stdout = err?.stdout || '';
-      stderr = err?.stderr || err?.message || String(err);
-    }
+      const metaRes = await execFileAsync(ytDlpPath, metaArgs, {
+        timeout: metaTimeoutMs,
+        signal: options?.signal,
+      });
+      const metaOutput = (metaRes.stdout || '').trim();
+      const parts = metaOutput.split('|||');
+      if (parts.length >= 3) {
+        durationSeconds = parseInt(parts[1], 10) || 0;
+        title = parts.slice(2).join('|||').trim();
+      } else if (parts.length === 2) {
+        durationSeconds = parseInt(parts[0], 10) || 0;
+        title = parts[1].trim();
+      }
+      console.log(`${logPrefix} [Stage: YOUTUBE_META_COMPLETED] Title: "${title}", Duration: ${durationSeconds}s`);
+    } catch (metaErr: any) {
+      const stderr = metaErr?.stderr ? String(metaErr.stderr).trim() : metaErr?.message || String(metaErr);
+      console.warn(`${logPrefix} Metadata extraction note: ${stderr.substring(0, 300)}`);
 
-    if (stderr) {
-      console.log(`[YouTube Extract] yt-dlp stderr output:`, stderr.substring(0, 500));
-    }
-
-    if (execError && (!stdout || !stdout.trim())) {
-      console.error(`[YouTube Extract] Failure: yt-dlp execution error for videoId=${videoId}:`, stderr);
       const is429 = stderr.includes('429') || stderr.toLowerCase().includes('too many requests');
       const is403 = stderr.includes('403') || stderr.toLowerCase().includes('forbidden') || stderr.toLowerCase().includes('please sign in');
-      const isPoToken = stderr.toLowerCase().includes('bot') || stderr.toLowerCase().includes('po token') || stderr.toLowerCase().includes('js runtime');
+      const isUnavailable = stderr.toLowerCase().includes('unavailable') || stderr.toLowerCase().includes('private video');
 
-      this.recordFailure(videoId, is429);
+      if (is429 || is403 || isUnavailable) {
+        this.recordFailure(videoId, is429);
+        let userMsg = 'YouTube video extraction failed';
+        if (is429) userMsg = 'YouTube rate limit reached (HTTP 429). Please retry shortly.';
+        else if (is403) userMsg = 'YouTube video requires sign-in or is age/region-restricted (HTTP 403).';
+        else if (isUnavailable) userMsg = 'YouTube video is unavailable or private.';
 
-      let userMsg = 'YouTube video extraction failed';
-      if (is429) userMsg = 'YouTube rate limit reached (HTTP 429). Please retry shortly.';
-      else if (is403) userMsg = 'YouTube video requires sign-in or is restricted (HTTP 403).';
-      else if (isPoToken) userMsg = 'YouTube anti-bot verification active for this video.';
-      else if (stderr.includes('unavailable')) userMsg = 'YouTube video is unavailable or private.';
-
-      return {
-        success: false,
-        videoId,
-        url,
-        extractionMethod: 'yt-dlp CLI',
-        ytDlpVersion,
-        transcriptLength: 0,
-        error: userMsg,
-        stderr: stderr.substring(0, 1000),
-        isRateLimited: is429,
-      };
-    }
-
-    let metadata: any = null;
-    try {
-      metadata = JSON.parse(stdout.trim());
-    } catch (parseErr: any) {
-      console.error(`[YouTube Extract] Failure: Failed to parse yt-dlp JSON output for videoId=${videoId}`);
-      this.recordFailure(videoId, false);
-      return {
-        success: false,
-        videoId,
-        url,
-        extractionMethod: 'yt-dlp JSON parse',
-        ytDlpVersion,
-        transcriptLength: 0,
-        error: 'Failed to parse video metadata JSON from yt-dlp',
-        stderr,
-      };
-    }
-
-    const title = metadata?.title || metadata?.fulltitle || '';
-    const durationSeconds = Math.round(metadata?.duration || metadata?.duration_seconds || 0);
-
-    console.log(`[YouTube Extract] Extracted Metadata - Title: "${title}", Duration: ${durationSeconds}s`);
-
-    const subtitles = metadata?.subtitles || {};
-    const autoCaptions = metadata?.automatic_captions || {};
-
-    console.log(`[YouTube Extract] Subtitle Languages Available: ${Object.keys(subtitles).join(', ') || 'none'}`);
-    console.log(`[YouTube Extract] Auto Caption Languages Available: ${Object.keys(autoCaptions).join(', ') || 'none'}`);
-
-    // Select caption track
-    let chosenTrackFormats: any[] | null = null;
-    let chosenLang = '';
-    let chosenKind = '';
-
-    const preferredLangs = ['en', 'en-US', 'en-GB', 'hi'];
-    for (const lang of preferredLangs) {
-      if (subtitles[lang]) {
-        chosenTrackFormats = subtitles[lang];
-        chosenLang = lang;
-        chosenKind = 'manual';
-        break;
+        return {
+          success: false,
+          videoId,
+          url,
+          extractionMethod: 'yt-dlp metadata',
+          ytDlpVersion,
+          transcriptLength: 0,
+          error: userMsg,
+          stderr: stderr.substring(0, 500),
+          isRateLimited: is429,
+        };
       }
+      // Non-fatal metadata error; proceed to attempt subtitle extraction
     }
 
-    if (!chosenTrackFormats) {
-      const manualKeys = Object.keys(subtitles);
-      const enManualKey = manualKeys.find(k => k.startsWith('en'));
-      if (enManualKey) {
-        chosenTrackFormats = subtitles[enManualKey];
-        chosenLang = enManualKey;
-        chosenKind = 'manual';
-      } else if (manualKeys.length > 0) {
-        chosenTrackFormats = subtitles[manualKeys[0]];
-        chosenLang = manualKeys[0];
-        chosenKind = 'manual';
-      }
-    }
-
-    if (!chosenTrackFormats) {
-      for (const lang of preferredLangs) {
-        if (autoCaptions[lang]) {
-          chosenTrackFormats = autoCaptions[lang];
-          chosenLang = lang;
-          chosenKind = 'automatic';
-          break;
-        }
-      }
-    }
-
-    if (!chosenTrackFormats) {
-      const autoKeys = Object.keys(autoCaptions);
-      const enAutoKey = autoKeys.find(k => k.startsWith('en'));
-      if (enAutoKey) {
-        chosenTrackFormats = autoCaptions[enAutoKey];
-        chosenLang = enAutoKey;
-        chosenKind = 'automatic';
-      } else if (autoKeys.length > 0) {
-        chosenTrackFormats = autoCaptions[autoKeys[0]];
-        chosenLang = autoKeys[0];
-        chosenKind = 'automatic';
-      }
-    }
-
-    if (!chosenTrackFormats || !Array.isArray(chosenTrackFormats) || chosenTrackFormats.length === 0) {
-      console.warn(`[YouTube Extract] Failure: No subtitle or caption tracks found for videoId=${videoId}`);
-      this.recordFailure(videoId, false);
+    if (options?.signal?.aborted) {
       return {
         success: false,
         videoId,
         url,
         title,
         durationSeconds,
-        extractionMethod: 'yt-dlp track inspection',
+        extractionMethod: 'yt-dlp',
         ytDlpVersion,
         transcriptLength: 0,
-        error: 'No subtitles or captions available for this video.',
+        error: 'Operation aborted',
       };
     }
 
-    console.log(`[YouTube Extract] Selected ${chosenKind} caption track for lang="${chosenLang}" (${chosenTrackFormats.length} format options)`);
+    // ── STAGE 2: SUBTITLE EXTRACTION (Bounded to 18s) ──────────────────────
+    console.log(`${logPrefix} [Stage: YOUTUBE_SUBTITLES_STARTED] Requesting subs (${subLangs})...`);
+    const tempDir = path.join(process.cwd(), 'scratch');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const tempPrefix = path.join(tempDir, `yt_sub_${videoId}_${Date.now()}`);
 
-    const vttFormat = chosenTrackFormats.find((f: any) => f.ext === 'vtt') ||
-                      chosenTrackFormats.find((f: any) => f.ext === 'srv1') ||
-                      chosenTrackFormats.find((f: any) => f.ext === 'json3') ||
-                      chosenTrackFormats[0];
-
-    if (!vttFormat || !vttFormat.url) {
-      console.warn(`[YouTube Extract] Failure: Selected caption track has no valid download URL for videoId=${videoId}`);
-      this.recordFailure(videoId, false);
-      return {
-        success: false,
-        videoId,
-        url,
-        title,
-        durationSeconds,
-        extractionMethod: 'yt-dlp track URL',
-        ytDlpVersion,
-        transcriptLength: 0,
-        error: 'Caption track format URL unavailable.',
-      };
+    const subArgs = [
+      '--write-sub',
+      '--write-auto-sub',
+      '--sub-lang', subLangs,
+      '--skip-download',
+      '--sub-format', 'vtt',
+      '--no-playlist',
+      '--socket-timeout', '10',
+      '--no-abort-on-error',
+      '-o', `${tempPrefix}.%(ext)s`,
+    ];
+    if (playerClient) {
+      subArgs.push('--extractor-args', `youtube:player_client=${playerClient}`);
     }
+    subArgs.push(url);
 
     let rawCaptionContent = '';
     try {
-      console.log(`[YouTube Extract] Fetching caption track URL (${vttFormat.ext || 'vtt'})...`);
-      const capRes = await fetch(vttFormat.url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-          'Referer': 'https://www.youtube.com/',
-        },
-        signal: AbortSignal.timeout(10000),
+      await execFileAsync(ytDlpPath, subArgs, {
+        timeout: subTimeoutMs,
+        signal: options?.signal,
       });
-
-      if (capRes.ok) {
-        rawCaptionContent = await capRes.text();
-      } else {
-        console.warn(`[YouTube Extract] HTTP ${capRes.status} returned fetching caption track URL.`);
-      }
-    } catch (fetchErr: any) {
-      console.warn(`[YouTube Extract] Direct fetch error for caption track:`, fetchErr?.message || fetchErr);
+    } catch (subErr: any) {
+      console.log(`${logPrefix} Subtitle process note: ${subErr?.message || subErr}`);
     }
 
-    // Fallback: If direct fetch failed or returned empty, run yt-dlp subtitle download
-    if (!rawCaptionContent || !rawCaptionContent.trim()) {
-      console.log(`[YouTube Extract] Falling back to yt-dlp file-based subtitle download...`);
-      const tempDir = path.join(process.cwd(), 'scratch');
-      if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-      const tempPrefix = path.join(tempDir, `yt_sub_${videoId}_${Date.now()}`);
-
-      try {
-        await execFileAsync(
-          ytDlpPath,
-          ['--write-sub', '--write-auto-sub', '--sub-lang', subLangs, '--skip-download', '--convert-subs', 'vtt', '--output', `${tempPrefix}`, url],
-          { timeout: timeoutMs }
-        );
-
-        const createdFiles = fs.readdirSync(tempDir).filter(f => f.startsWith(path.basename(tempPrefix)));
+    try {
+      if (fs.existsSync(tempDir)) {
+        const prefixBase = path.basename(tempPrefix);
+        const createdFiles = fs.readdirSync(tempDir).filter((f) => f.startsWith(prefixBase));
         if (createdFiles.length > 0) {
-          const firstSub = path.join(tempDir, createdFiles[0]);
-          rawCaptionContent = fs.readFileSync(firstSub, 'utf-8');
+          const enFile = createdFiles.find((f) => f.includes('.en.') || f.endsWith('.en.vtt'));
+          const hiFile = createdFiles.find((f) => f.includes('.hi.') || f.endsWith('.hi.vtt'));
+          const chosenFile = enFile || hiFile || createdFiles[0];
+          rawCaptionContent = fs.readFileSync(path.join(tempDir, chosenFile), 'utf-8');
+
           for (const f of createdFiles) {
             try { fs.unlinkSync(path.join(tempDir, f)); } catch {}
           }
         }
-      } catch (subErr: any) {
-        console.warn(`[YouTube Extract] Fallback yt-dlp subtitle download failed:`, subErr?.message || subErr);
       }
+    } catch (fsErr) {
+      console.warn(`${logPrefix} File cleanup error:`, fsErr);
     }
 
     const cleanedTranscript = this.cleanVttCaptionText(rawCaptionContent);
     const transcriptLength = cleanedTranscript.length;
 
     if (!cleanedTranscript || transcriptLength < 20) {
-      console.warn(`[YouTube Extract] Failure: Cleaned transcript is empty or too short (${transcriptLength} chars) for videoId=${videoId}`);
+      console.warn(`${logPrefix} [Stage: YOUTUBE_SUBTITLES_FAILED] No usable transcript available (${transcriptLength} chars).`);
       this.recordFailure(videoId, false);
       return {
         success: false,
@@ -448,14 +368,14 @@ export class YouTubeExtractor {
         url,
         title,
         durationSeconds,
-        extractionMethod: 'yt-dlp caption cleaning',
+        extractionMethod: 'yt-dlp',
         ytDlpVersion,
         transcriptLength: 0,
-        error: 'Extracted transcript is empty or unreadable.',
+        error: 'No subtitles or captions available for this video.',
       };
     }
 
-    console.log(`[YouTube Extract] Extraction Success! Transcript Length: ${transcriptLength} chars.`);
+    console.log(`${logPrefix} [Stage: YOUTUBE_SUBTITLES_COMPLETED] Transcript length: ${transcriptLength} chars.`);
     this.recordSuccess(videoId);
 
     return {
@@ -465,7 +385,7 @@ export class YouTubeExtractor {
       title,
       durationSeconds,
       transcript: cleanedTranscript,
-      extractionMethod: `yt-dlp (${chosenKind} ${chosenLang} captions)`,
+      extractionMethod: 'yt-dlp captions',
       ytDlpVersion,
       transcriptLength,
     };

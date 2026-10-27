@@ -20,3 +20,15 @@ const supabaseAnonKey = process.env.SUPABASE_ANON_KEY!;
 export const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+
+/** Return a Supabase client scoped with user authorization token if provided */
+export function getScopedSupabaseClient(token?: string) {
+  if (token) {
+    return createClient(supabaseUrl, supabaseAnonKey || supabaseKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+  }
+  return supabase;
+}
+

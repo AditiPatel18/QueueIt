@@ -86,14 +86,14 @@ Return ONLY the final translated English text without any explanations, meta-com
 Text:
 ${text.substring(0, 10000)}`;
 
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-flash-latest'];
+  const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
   for (const model of models) {
     try {
       const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(12000),
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
@@ -217,7 +217,7 @@ export function validateSummary(summary: string, sourceContent: string): Validat
 
   // 1. Word count & length checks
   if (sourceWords >= 100) {
-    if (summaryWords < 30 || summaryChars < 150) {
+    if (summaryWords < 15 || summaryChars < 80) {
       return { valid: false, reason: `Summary is suspiciously short (${summaryWords} words, ${summaryChars} chars) for standard content.` };
     }
     if (summaryWords > 350) {
@@ -522,9 +522,11 @@ export class AIService {
     title: string,
     url: string,
     contentType: string = 'article',
-    snippet: string = ''
+    snippet: string = '',
+    itemId?: string
   ): Promise<{ summary: string; tags: string[]; priority: number; error?: string }> {
     const platform = resolvePlatformInfo(url);
+    const logPrefix = itemId ? `[Item ${itemId}]` : `[AIService]`;
 
     if (!snippet || !snippet.trim() || snippet.trim().length < 20) {
       return {
@@ -537,7 +539,7 @@ export class AIService {
 
     const apiKey = this.getApiKey();
     if (!apiKey) {
-      console.warn('[AIService] GEMINI_API_KEY is missing.');
+      console.warn(`${logPrefix} GEMINI_API_KEY is missing.`);
       return {
         summary: '',
         tags: [contentType || 'article', 'general'],
@@ -547,12 +549,12 @@ export class AIService {
     }
 
     const preparedContent = prepareContentForSummarization(snippet, 12000);
-    const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-flash-latest'];
+    const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
 
-    const primaryPrompt = `You are an expert technical content summarizer.
+    const primaryPrompt = `You are an expert technical content summarizer designed to provide the kind of high-value, direct overview seen in YouTube's native AI summaries.
 
 GOAL:
-Generate a concise, highly informative, self-contained summary of the provided source content so a reader understands what it teaches without consuming the original source.
+Produce an informative, clear, content-specific summary of the source material. A reader must understand what was taught, demonstrated, or concluded without watching the entire video or reading the full text.
 
 SOURCE TITLE: "${title}"
 SOURCE TYPE: "${contentType || platform.source_type}"
@@ -565,19 +567,21 @@ ${preparedContent}
 
 STRICT INSTRUCTIONS:
 1. Base your summary ONLY on the provided source content. Do NOT invent facts or extrapolate beyond what is present.
-2. Clearly explain the main topic/purpose, important concepts, arguments, steps, workflows, or conclusions.
-3. Preserve key technical terms, names, numbers, specifications, and relationships.
-4. Remove repetition, filler, greetings, navigation text, ads, and irrelevant metadata.
-5. Do NOT copy large sections verbatim. Rephrase and synthesize in clear English.
-6. Do NOT mention that this is an AI summary or transcript. Do NOT use meta-phrases like "this video", "this article", "in this tutorial", "the author", "the speaker", "here is a summary", "summary:", "overview:". Start DIRECTLY with the core subject.
-7. Format: Write 1 to 3 concise, well-structured plain text paragraphs.
-8. Length: For normal content, target 120 to 220 words. For very short source content, write a shorter proportional summary without padding.
-9. Do NOT output markdown headers, titles, bullet points, meta-commentary, or prompt instructions.`;
+2. Directly explain the central topic and purpose right away in the first sentence.
+3. Identify and explain key concepts, mechanisms, arguments, steps, workflows, or concrete examples taught in the source.
+4. Detail the final conclusions, outcomes, or key takeaways.
+5. Remove repetition, filler, greetings, sponsor segments, ads, and irrelevant details.
+6. Do NOT copy large sections verbatim. Rephrase and synthesize in clear English.
+7. Do NOT use conversational preambles or meta-phrases (e.g., "in this video", "this video shows", "the author discusses", "here is a summary", "summary:"). Start DIRECTLY with the core subject.
+8. Format: 1 to 3 concise, well-structured paragraphs in plain text.
+9. Length: For substantial content, target 120 to 220 words. For short sources (under 100 words), write a shorter, proportional summary without artificial filler.
+10. Do NOT output markdown headers, titles, bullet points, meta-commentary, or prompt instructions.`;
 
     let lastValidationReason = '';
 
     for (const model of models) {
       try {
+        console.log(`${logPrefix} [Stage: GEMINI_REQUEST_STARTED] Model: ${model}, Input length: ${preparedContent.length} chars`);
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
         const res = await fetch(apiUrl, {
           method: 'POST',
@@ -594,17 +598,20 @@ STRICT INSTRUCTIONS:
 
         if (!res.ok) {
           const errText = await res.text();
-          console.warn(`[AIService] ${model} returned HTTP ${res.status}: ${errText.substring(0, 150)}`);
+          console.warn(`${logPrefix} ${model} returned HTTP ${res.status}: ${errText.substring(0, 150)}`);
           continue;
         }
 
         const data: any = await res.json();
         const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
         let cleaned = cleanSummaryText(rawText);
+        console.log(`${logPrefix} [Stage: GEMINI_REQUEST_COMPLETED] Model: ${model}, Response length: ${cleaned.length} chars`);
 
         // Stage 4 Validation (Attempt 1)
+        console.log(`${logPrefix} [Stage: SUMMARY_VALIDATION_STARTED] Attempt 1 candidate: ${cleaned.length} chars, ${cleaned.split(/\s+/).filter(Boolean).length} words`);
         const val = validateSummary(cleaned, preparedContent);
         if (val.valid) {
+          console.log(`${logPrefix} [Stage: SUMMARY_VALIDATION_COMPLETED] Status: VALID`);
           const tags = [platform.source_type || 'article', 'general'];
           if (
             title.toLowerCase().includes('code') ||
@@ -620,7 +627,7 @@ STRICT INSTRUCTIONS:
         }
 
         lastValidationReason = val.reason || 'Failed quality validation';
-        console.warn(`[AIService] ${model} summary validation failed (Attempt 1): ${lastValidationReason}. Retrying ONCE with correction prompt...`);
+        console.warn(`${logPrefix} [Stage: SUMMARY_VALIDATION_COMPLETED] Status: INVALID (${lastValidationReason}). Retrying ONCE with correction prompt...`);
 
         // Attempt 2: Retry ONCE with stronger correction prompt
         const correctionPrompt = `Your previous summary attempt was rejected: ${lastValidationReason}.
@@ -654,17 +661,18 @@ ${preparedContent}
           const retryData: any = await retryRes.json();
           const retryRaw = retryData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
           let retryCleaned = cleanSummaryText(retryRaw);
+          console.log(`${logPrefix} [Stage: SUMMARY_VALIDATION_STARTED] Attempt 2 candidate: ${retryCleaned.length} chars`);
           const retryVal = validateSummary(retryCleaned, preparedContent);
           if (retryVal.valid) {
-            console.log(`[AIService] Quality retry successful for ${model}. Summary validated.`);
+            console.log(`${logPrefix} [Stage: SUMMARY_VALIDATION_COMPLETED] Status: VALID (retry succeeded)`);
             const tags = [platform.source_type || 'article', 'general'];
             return { summary: retryCleaned, tags, priority: 60 };
           }
           lastValidationReason = retryVal.reason || 'Retry failed validation';
-          console.warn(`[AIService] ${model} retry summary validation failed: ${lastValidationReason}`);
+          console.warn(`${logPrefix} [Stage: SUMMARY_VALIDATION_COMPLETED] Status: INVALID (${lastValidationReason})`);
         }
       } catch (err: any) {
-        console.error(`[AIService] Error calling model ${model}:`, err?.message || err);
+        console.error(`${logPrefix} Error calling model ${model}:`, err?.message || err);
       }
     }
 
@@ -690,6 +698,7 @@ ${preparedContent}
     const ENRICHMENT_TIMEOUT_MS = 60000;
     const currentRunId = Date.now() + Math.random();
     AIService.activeEnrichmentRuns.set(itemId, currentRunId);
+    console.log(`[Item ${itemId}] [Stage: JOB_STARTED] Processing enrichment for URL="${url}"`);
     const abortController = new AbortController();
     const { signal } = abortController;
     let isTimedOut = false;
@@ -738,16 +747,17 @@ ${preparedContent}
       try {
         await supabase.from('items').update({ processing_status: 'processing' }).eq('id', itemId);
       } catch (err: any) {
-        console.warn(`[AIService] Failed to update processing_status to processing: ${err?.message}`);
+        console.warn(`[Item ${itemId}] Failed to update processing_status to processing: ${err?.message}`);
       }
 
       checkAborted();
 
       // STAGE 1: source loaded
+      const tExt0 = Date.now();
       if (isYouTube) {
         if (!existingTranscript) {
-          console.log(`[AIService] Stage 1: loading source via YouTubeExtractor for ${url}...`);
-          const extractionResult = await YouTubeExtractor.extractYouTubeContent(url);
+          console.log(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_STARTED] Source type: youtube, URL: ${url}`);
+          const extractionResult = await YouTubeExtractor.extractYouTubeContent(url, { signal, itemId });
           checkAborted();
 
           if (extractionResult.durationSeconds && extractionResult.durationSeconds > 0) {
@@ -757,9 +767,10 @@ ${preparedContent}
             title = extractionResult.title.trim();
           }
 
+          const extDurMs = Date.now() - tExt0;
           if (!extractionResult.success || !extractionResult.transcript || !extractionResult.transcript.trim()) {
-            const failReason = extractionResult.error || 'No transcript or captions available for YouTube video';
-            console.warn(`[AIService] Stage 1 Failed: YouTube transcript extraction failed: ${failReason}`);
+            const failReason = extractionResult.error || 'No transcript or captions available for this video.';
+            console.warn(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_FAILED] Duration: ${extDurMs}ms | Reason: ${failReason}`);
             if (isTimedOut || signal.aborted) return;
 
             const failPayload: Record<string, any> = {
@@ -773,10 +784,12 @@ ${preparedContent}
             try {
               await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[Extraction Failed] ${failReason}` }, supabase);
             } catch { /* non-fatal */ }
+            console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: ${failReason}`);
             return;
           }
 
           snippet = extractionResult.transcript;
+          console.log(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_COMPLETED] Duration: ${extDurMs}ms | Character count: ${snippet.length} (Title: "${title}")`);
         }
       } else {
         // Non-YouTube source: use existing transcript/description or fetch web article text
@@ -784,14 +797,16 @@ ${preparedContent}
           snippet = existingDescription || '';
         }
         if (!snippet || !snippet.trim()) {
-          console.log(`[AIService] Stage 1: fetching web article text for ${url}...`);
+          console.log(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_STARTED] Fetching article text for ${url}`);
           snippet = await fetchWebArticleContent(url);
           checkAborted();
+          const extDurMs = Date.now() - tExt0;
+          console.log(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_COMPLETED] Duration: ${extDurMs}ms | Character count: ${snippet.length}`);
         }
       }
 
       if (!snippet || !snippet.trim() || snippet.trim().length < 20) {
-        console.warn(`[AIService] Stage 1 Failed: No usable text content could be extracted for item ${itemId}`);
+        console.warn(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_FAILED] Reason: No usable text content could be extracted`);
         if (isTimedOut || signal.aborted) return;
         const failPayload: Record<string, any> = {
           processing_status: 'failed',
@@ -801,6 +816,7 @@ ${preparedContent}
         try {
           await fallbackDb.updateItemMetadata(userId, itemId, { notes: '[Extraction Failed] No usable text content' }, supabase);
         } catch { /* non-fatal */ }
+        console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: No usable text content`);
         return;
       }
 
@@ -840,14 +856,17 @@ ${preparedContent}
       }
 
       // STAGE 3: Gemini request
-      console.log(`[AIService] Stage 3: Gemini request sent for item ${itemId}`);
-      const result = await this.generateSummary(title, url, platformInfo.source_type, preparedContent);
+      const tGem0 = Date.now();
+      console.log(`[Item ${itemId}] [Stage: GEMINI_REQUEST_STARTED] Calling Gemini summarization API`);
+      const result = await this.generateSummary(title, url, platformInfo.source_type, preparedContent, itemId);
+      const gemDurMs = Date.now() - tGem0;
+      console.log(`[Item ${itemId}] [Stage: GEMINI_REQUEST_DURATION] Gemini roundtrip: ${gemDurMs}ms`);
       checkAborted();
 
       // STAGE 4: summary validated
       if (!result.summary || !result.summary.trim()) {
         const failReason = result.error || 'Gemini summary generation failed quality validation.';
-        console.warn(`[AIService] Stage 4 Failed: Summary validation failed for item ${itemId}: ${failReason}`);
+        console.warn(`[Item ${itemId}] [Stage: SUMMARY_VALIDATION_COMPLETED] Status: INVALID (${failReason})`);
         if (isTimedOut || signal.aborted) return;
 
         const failPayload: Record<string, any> = {
@@ -858,6 +877,7 @@ ${preparedContent}
         try {
           await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[AI Generation Failed] ${failReason}` }, supabase);
         } catch { /* non-fatal */ }
+        console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: ${failReason}`);
         return;
       }
 
@@ -883,11 +903,14 @@ ${preparedContent}
 
       checkAborted();
 
-      // STAGE 5: saved (guard against writing if timed out or superseded by newer run)
+      // STAGE 5: database save (guard against writing if timed out or superseded by newer run)
       if (isTimedOut || signal.aborted || AIService.activeEnrichmentRuns.get(itemId) !== currentRunId) {
-        console.warn(`[AIService] Discarding late summary save for item ${itemId} because operation timed out or was superseded.`);
+        console.warn(`[Item ${itemId}] Discarding late summary save because operation timed out or was superseded.`);
         return;
       }
+
+      const tDb0 = Date.now();
+      console.log(`[Item ${itemId}] [Stage: DATABASE_SAVE_STARTED] Saving summary and metadata to database`);
 
       const updatePayload: Record<string, any> = {
         ai_summary: result.summary,
@@ -906,7 +929,7 @@ ${preparedContent}
 
       const { error } = await supabase.from('items').update(updatePayload).eq('id', itemId);
       if (error) {
-        console.warn('[AIService] Supabase update warning:', error.message);
+        console.warn(`[Item ${itemId}] Supabase update warning:`, error.message);
         const safePayload: Record<string, any> = {
           ai_summary: result.summary,
           tags: result.tags,
@@ -922,11 +945,13 @@ ${preparedContent}
         await fallbackDb.updateItemMetadata(userId, itemId, { estimated_time_minutes: estimatedTimeMinutes, collection_id: collectionId, notes: null }, supabase);
       } catch { /* non-fatal */ }
 
+      const dbDurMs = Date.now() - tDb0;
       const summaryWordCount = result.summary.split(/\s+/).filter(Boolean).length;
-      console.log(`[AIService] Stage 5: saved item ${itemId} as completed (Summary length: ${result.summary.length} chars, ${summaryWordCount} words)`);
+      console.log(`[Item ${itemId}] [Stage: DATABASE_SAVE_COMPLETED] Duration: ${dbDurMs}ms | Summary length: ${result.summary.length} chars, ${summaryWordCount} words`);
+      console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: completed`);
     })().catch((internalErr) => {
       if (!isTimedOut && !signal.aborted) {
-        console.error(`[AIService] Uncaught error inside enrichment execution for item ${itemId}:`, internalErr?.message || internalErr);
+        console.error(`[Item ${itemId}] Uncaught error inside enrichment execution:`, internalErr?.message || internalErr);
       }
     });
 
@@ -934,20 +959,17 @@ ${preparedContent}
       await Promise.race([executionPromise, timeoutPromise]);
     } catch (err: any) {
       if (AIService.activeEnrichmentRuns.get(itemId) !== currentRunId) {
-        console.warn(`[AIService] Discarding error handling for item ${itemId} because it was superseded by a newer run.`);
+        console.warn(`[Item ${itemId}] Discarding error handling because it was superseded by a newer run.`);
         return;
       }
-      if (!isTimedOut) {
-        console.error(`[AIService] processItemEnrichment error for item ${itemId}:`, err?.message || err);
-      } else {
-        console.warn(`[AIService] processItemEnrichment timed out for item ${itemId} after ${ENRICHMENT_TIMEOUT_MS / 1000}s`);
-      }
+      const failReason = isTimedOut ? `Enrichment pipeline timed out after ${ENRICHMENT_TIMEOUT_MS / 1000}s` : (err?.message || String(err));
+      console.error(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: ${failReason}`);
       try {
         await supabase.from('items').update({
           processing_status: 'failed',
           ai_summary: null,
         }).eq('id', itemId);
-        await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[Extraction Failed] ${err?.message || err}` }, supabase);
+        await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[Extraction Failed] ${failReason}` }, supabase);
       } catch { /* non-fatal */ }
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);

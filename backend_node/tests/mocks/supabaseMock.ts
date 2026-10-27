@@ -58,3 +58,6 @@ export const supabaseAuth = {
   auth: mockAuth,
   from: jest.fn().mockImplementation(() => createMockQueryBuilder()),
 };
+
+export const getScopedSupabaseClient = jest.fn().mockImplementation(() => supabase);
+

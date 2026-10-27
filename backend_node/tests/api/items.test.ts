@@ -48,15 +48,15 @@ jest.mock('../../src/config/supabase', () => {
     }),
   };
 
+  const mockClient = {
+    auth: mockAuth,
+    from: jest.fn(),
+  };
+
   return {
-    supabase: {
-      auth: mockAuth,
-      from: jest.fn(),
-    },
-    supabaseAuth: {
-      auth: mockAuth,
-      from: jest.fn(),
-    },
+    supabase: mockClient,
+    supabaseAuth: mockClient,
+    getScopedSupabaseClient: jest.fn().mockImplementation(() => mockClient),
   };
 });
 

@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
-import { supabase } from '../config/supabase';
+import { supabase, supabaseAuth } from '../config/supabase';
 
 const router = Router();
 
@@ -29,41 +29,53 @@ router.post('/signup', async (req, res: Response) => {
     let userResult: any = null;
     let sessionResult: any = null;
 
-    const { data, error } = await supabase.auth.signUp({
-      email: cleanEmail,
-      password: String(password),
-      options: {
-        data: { name: userName, full_name: userName },
-      },
-    });
+    // In test/development only, allow explicit auto-confirm of test users if explicitly enabled by environment configuration
+    const allowTestAutoConfirm =
+      process.env.NODE_ENV !== 'production' &&
+      process.env.ALLOW_AUTO_CONFIRM_TEST_USERS === 'true' &&
+      typeof (supabase.auth as any)?.admin?.createUser === 'function';
 
-    if (error) {
-      const { data: adminUser, error: adminErr } = await supabase.auth.admin.createUser({
+    if (allowTestAutoConfirm) {
+      try {
+        const { data: adminUser } = await (supabase.auth as any).admin.createUser({
+          email: cleanEmail,
+          password: String(password),
+          email_confirm: true,
+          user_metadata: { name: userName, full_name: userName },
+        });
+        if (adminUser?.user) {
+          userResult = adminUser.user;
+        }
+      } catch { /* fallback to standard signUp */ }
+    }
+
+    if (!userResult) {
+      const { data, error } = await supabaseAuth.auth.signUp({
         email: cleanEmail,
         password: String(password),
-        email_confirm: true,
-        user_metadata: { name: userName, full_name: userName },
+        options: {
+          data: { name: userName, full_name: userName },
+        },
       });
-      if (adminErr || !adminUser.user) {
-        return res.status(400).json(formatResponse(false, null, error?.message || adminErr?.message || 'Signup failed'));
+      if (error) {
+        return res.status(400).json(formatResponse(false, null, error?.message || 'Signup failed'));
       }
-      userResult = adminUser.user;
-    } else {
-      userResult = data.user;
-      sessionResult = data.session;
-      if (userResult?.id && !userResult.email_confirmed_at) {
-        try {
-          await supabase.auth.admin.updateUserById(userResult.id, { email_confirm: true });
-        } catch { /* non-fatal */ }
+      userResult = data?.user;
+      if (data?.session) {
+        sessionResult = data.session;
       }
     }
 
     if (!sessionResult) {
-      const { data: loginData } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password: String(password),
-      });
-      if (loginData?.session) sessionResult = loginData.session;
+      try {
+        const loginRes = await supabaseAuth.auth.signInWithPassword({
+          email: cleanEmail,
+          password: String(password),
+        });
+        if (loginRes?.data?.session) {
+          sessionResult = loginRes.data.session;
+        }
+      } catch { /* non-fatal */ }
     }
 
     return res.json(formatResponse(true, { user: userResult, session: sessionResult }));
@@ -82,34 +94,10 @@ router.post('/login', async (req, res: Response) => {
   }
   const cleanEmail = String(email).trim().toLowerCase();
   try {
-    let { data, error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabaseAuth.auth.signInWithPassword({
       email: cleanEmail,
       password: String(password),
     });
-
-    // Backward compatibility check for legacy or unconfirmed accounts
-    if (error && (error.message.includes('Invalid') || error.message.includes('confirm'))) {
-      try {
-        const { data: userList } = await supabase.auth.admin.listUsers();
-        const existingUser = userList?.users?.find(
-          (u) => (u.email || '').toLowerCase().trim() === cleanEmail
-        );
-
-        if (existingUser) {
-          if (!existingUser.email_confirmed_at) {
-            await supabase.auth.admin.updateUserById(existingUser.id, { email_confirm: true });
-            const retry = await supabase.auth.signInWithPassword({
-              email: cleanEmail,
-              password: String(password),
-            });
-            if (retry.data?.session) {
-              data = retry.data;
-              error = null;
-            }
-          }
-        }
-      } catch { /* non-fatal fallback */ }
-    }
 
     if (error || !data?.session) {
       return res.status(401).json(formatResponse(false, null, error?.message || 'Invalid login credentials'));
