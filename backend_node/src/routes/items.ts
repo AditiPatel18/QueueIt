@@ -12,6 +12,7 @@ import { fallbackDb } from '../utils/schemaFallback';
 import { normalizeUrl, resolvePlatformInfo, isSafeUrl } from '../utils/urlHelper';
 import { StreakService } from '../services/gamificationService';
 import { AIService, determineFolderForItem } from '../services/aiService';
+import { YouTubeExtractor } from '../services/youtubeExtractor';
 
 const router = Router();
 
@@ -213,6 +214,7 @@ function itemToResponse(item: Record<string, any>): Record<string, any> {
     added_at: item.added_at,
     completed_at: item.completed_at,
     created_at: item.created_at || item.added_at,
+    updated_at: item.updated_at || item.created_at || item.added_at,
     audio_url: item.audio_url,
     thumbnail_url: item.thumbnail_url,
     source_name,
@@ -231,7 +233,8 @@ function itemToResponse(item: Record<string, any>): Record<string, any> {
     priority_score: item.priority_score ?? 50.0,
     collection_id: item.collection_id,
     read_progress: item.read_progress ?? 0,
-    notes: item.notes,
+    notes: item.notes || item.processing_error || null,
+    processing_error: item.processing_error || item.notes || null,
   };
 }
 
@@ -272,8 +275,12 @@ async function runMockEnrichmentPipeline(itemId: string, url: string, userId: st
 
   try {
     updateIngestionDebug(itemId, 'processing', 'AI enrichment pipeline started.');
-    await AIService.processItemEnrichment(itemId, url, userId, titleOverride);
-    updateIngestionDebug(itemId, 'completed', 'AI enrichment pipeline completed successfully.');
+    const result = await AIService.processItemEnrichment(itemId, url, userId, titleOverride);
+    if (result && result.success) {
+      updateIngestionDebug(itemId, 'completed', 'AI enrichment pipeline completed successfully.');
+    } else {
+      updateIngestionDebug(itemId, 'failed', result?.error || 'AI enrichment pipeline failed.', result?.error || 'Enrichment failed');
+    }
   } catch (err: any) {
     updateIngestionDebug(itemId, 'failed', `Pipeline error: ${err?.message}`, String(err));
   } finally {
@@ -323,23 +330,35 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
                              existingItem.processing_status === 'failed';
 
       if (isStaleSummary || !hasExtractedText) {
+        const nowIso = new Date().toISOString();
         await supabase.from('items').update({
           processing_status: 'queued',
           ai_summary: null,
+          updated_at: nowIso,
         }).eq('id', existingItem.id);
         try {
-          await fallbackDb.updateItemMetadata(userId, existingItem.id, { notes: null }, supabase);
+          await fallbackDb.updateItemMetadata(userId, existingItem.id, { notes: null, processing_error: null }, supabase);
         } catch { /* non-fatal */ }
 
         processingLocks.delete(existingItem.id);
+        const videoId = YouTubeExtractor.extractVideoId(cleanUrl);
+        if (videoId) {
+          const backoff = YouTubeExtractor.isVideoInBackoff(videoId);
+          if (!backoff.isRateLimited) {
+            YouTubeExtractor.clearBackoff(videoId);
+          }
+        }
         console.log(`[Item ${existingItem.id}] [Stage: JOB_QUEUED] Existing item re-queued for enrichment (URL: ${cleanUrl})`);
         runMockEnrichmentPipeline(existingItem.id, cleanUrl, userId, existingItem.title || title || null).catch(() => {});
+        existingItem.updated_at = nowIso;
       }
 
       const merged = await fallbackDb.mergeSingleItemMetadata(userId, {
         ...existingItem,
         processing_status: (isStaleSummary || !hasExtractedText) ? 'queued' : existingItem.processing_status,
         ai_summary: (isStaleSummary || !hasExtractedText) ? null : existingItem.ai_summary,
+        notes: (isStaleSummary || !hasExtractedText) ? null : existingItem.notes,
+        processing_error: (isStaleSummary || !hasExtractedText) ? null : existingItem.processing_error,
       });
       const resp = itemToResponse(merged);
       return res.status(200).set('X-QueueIt-Duplicate', 'true').json({ ...resp, is_duplicate: true });
@@ -1364,11 +1383,21 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
         const itemTime = item.updated_at ? new Date(item.updated_at).getTime() : (item.added_at ? new Date(item.added_at).getTime() : (item.created_at ? new Date(item.created_at).getTime() : 0));
         if (itemTime > 0 && (nowTime - itemTime > STALE_PROCESSING_THRESHOLD_MS)) {
           console.warn(`[items] Detected stale processing item ${item.id} (${Math.round((nowTime - itemTime)/1000)}s old). Auto-recovering to failed.`);
+          const nowIso = new Date().toISOString();
           item.processing_status = 'failed';
+          item.updated_at = nowIso;
           item.notes = item.notes || 'Processing timed out. Click Retry AI to re-extract.';
+          item.processing_error = item.processing_error || item.notes;
           try {
-            Promise.resolve(supabase.from('items').update({ processing_status: 'failed', ai_summary: null }).eq('id', item.id)).catch(() => {});
-            Promise.resolve(fallbackDb.updateItemMetadata(userId, item.id, { notes: item.notes }, supabase)).catch(() => {});
+            Promise.resolve(supabase.from('items').update({
+              processing_status: 'failed',
+              ai_summary: null,
+              updated_at: nowIso,
+            }).eq('id', item.id)).catch(() => {});
+            Promise.resolve(fallbackDb.updateItemMetadata(userId, item.id, {
+              notes: item.notes,
+              processing_error: item.processing_error,
+            }, supabase)).catch(() => {});
           } catch { /* non-fatal */ }
         }
       }
@@ -1459,7 +1488,7 @@ router.put('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response)
     }
 
     // Metadata field routing — strip unmapped columns from remoteData
-    const metaOnly = ['read_progress', 'full_summary', 'actual_time_spent', 'notes', 'estimated_time_minutes'];
+    const metaOnly = ['read_progress', 'full_summary', 'actual_time_spent', 'notes', 'processing_error', 'estimated_time_minutes'];
     if (!(fallbackDb as any).has_collection_id) {
       metaOnly.push('collection_id');
     }
@@ -1548,7 +1577,7 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res: Respons
     }
 
     // Route metadata fields — strip unmapped columns ONLY if missing in schema
-    ['read_progress', 'actual_time_spent', 'notes', 'full_summary', 'estimated_time_minutes', 'collection_id'].forEach(f => {
+    ['read_progress', 'actual_time_spent', 'notes', 'processing_error', 'full_summary', 'estimated_time_minutes', 'collection_id'].forEach(f => {
       if (!(fallbackDb as any)[`has_${f}`]) {
         delete updateData[f];
       }
@@ -1604,23 +1633,43 @@ router.post('/:id/retry', requireAuth, async (req: AuthenticatedRequest, res: Re
     const { data, error } = await supabase.from('items').select('*').eq('id', itemId).eq('user_id', userId).maybeSingle();
     if (error || !data) return res.status(404).json({ detail: 'Item not found' });
 
+    const nowIso = new Date().toISOString();
+
     // Reset to queued & clear previous transcript/error notes for fresh re-extraction
     await supabase.from('items').update({
       processing_status: 'queued',
       ai_summary: null,
       extracted_text: null,
+      updated_at: nowIso,
     }).eq('id', itemId);
     try {
-      await fallbackDb.updateItemMetadata(userId, itemId, { notes: null }, supabase);
+      await fallbackDb.updateItemMetadata(userId, itemId, { notes: null, processing_error: null }, supabase);
     } catch { /* non-fatal */ }
     updateIngestionDebug(itemId, 'queued', 'Item manually enqueued for retry.');
 
     // Clear any stale lock on this item so retry pipeline executes
     processingLocks.delete(itemId);
 
+    // If YouTube video, check backoff: if not genuine rate limit (e.g. transient failure), clear backoff for retry
+    const videoId = YouTubeExtractor.extractVideoId(data.url);
+    if (videoId) {
+      const backoff = YouTubeExtractor.isVideoInBackoff(videoId);
+      if (!backoff.isRateLimited) {
+        YouTubeExtractor.clearBackoff(videoId);
+      }
+    }
+
     console.log(`[Item ${itemId}] [Stage: JOB_QUEUED] Item queued via retry request (URL: ${data.url})`);
 
-    const resetItem = { ...data, processing_status: 'queued', ai_summary: null, extracted_text: null };
+    const resetItem = {
+      ...data,
+      processing_status: 'queued',
+      ai_summary: null,
+      extracted_text: null,
+      updated_at: nowIso,
+      notes: null,
+      processing_error: null,
+    };
     const merged = await fallbackDb.mergeSingleItemMetadata(userId, resetItem);
 
     // Kick off enrichment pipeline for existing item

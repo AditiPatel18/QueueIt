@@ -200,4 +200,50 @@ describe('Items API Integration Tests', () => {
       expect(res.body.reading_time).toBeDefined();
     });
   });
+
+  describe('POST /api/items/:id/retry — Old Failed Item Recovery', () => {
+    it('should update updated_at timestamp when retrying an old failed item so it is not marked stale', async () => {
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+      const oldFailedItem = {
+        id: 'old-failed-item-1',
+        user_id: 'test-user-id',
+        url: 'https://www.youtube.com/watch?v=dzL6WigkIPI',
+        title: 'Old Failed Video',
+        status: 'unread',
+        processing_status: 'failed',
+        created_at: threeDaysAgo,
+        updated_at: threeDaysAgo,
+        added_at: threeDaysAgo,
+        notes: '[Extraction Failed] YouTube anti-bot verification or sign-in required',
+      };
+
+      const customBuilder = createBuilder();
+      customBuilder.maybeSingle = jest.fn().mockResolvedValue({ data: oldFailedItem, error: null });
+      (supabase.from as jest.Mock).mockReturnValue(customBuilder);
+
+      const res = await request(app)
+        .post('/api/items/old-failed-item-1/retry')
+        .set('Authorization', 'Bearer valid-jwt-token');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toBeDefined();
+      expect(res.body.id).toBe('old-failed-item-1');
+      expect(res.body.processing_status).toBe('queued');
+      expect(res.body.notes).toBeNull();
+      expect(res.body.processing_error).toBeNull();
+
+      // Verify updated_at is fresh (within last 10 seconds), preventing the 2-minute stale timer from tripping
+      expect(res.body.updated_at).toBeDefined();
+      const returnedTime = new Date(res.body.updated_at).getTime();
+      expect(Date.now() - returnedTime).toBeLessThan(10000);
+
+      // Verify Supabase update was called with updated_at set to fresh timestamp
+      const updateCall = customBuilder.update.mock.calls[0];
+      expect(updateCall).toBeDefined();
+      expect(updateCall[0].processing_status).toBe('queued');
+      expect(updateCall[0].updated_at).toBeDefined();
+      const dbUpdateTime = new Date(updateCall[0].updated_at).getTime();
+      expect(Date.now() - dbUpdateTime).toBeLessThan(10000);
+    });
+  });
 });

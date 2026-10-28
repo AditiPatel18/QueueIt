@@ -60,4 +60,3 @@ export const supabaseAuth = {
 };
 
 export const getScopedSupabaseClient = jest.fn().mockImplementation(() => supabase);
-

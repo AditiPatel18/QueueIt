@@ -1,6 +1,7 @@
 import request from 'supertest';
 import app from '../../src/app';
 import { supabase, supabaseAuth } from '../../src/config/supabase';
+import { YouTubeExtractor } from '../../src/services/youtubeExtractor';
 
 jest.mock('../../src/config/supabase', () => {
   const mockAuth = {
@@ -44,6 +45,11 @@ describe('Collections, Analytics, Chat & Health API Tests', () => {
 
   describe('GET /health', () => {
     it('should return health status 200 OK', async () => {
+      jest.spyOn(YouTubeExtractor, 'checkYtDlpAvailability').mockResolvedValueOnce({
+        available: true,
+        resolvedPath: 'yt-dlp',
+        version: '2026.08.19',
+      });
       const res = await request(app).get('/health');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');

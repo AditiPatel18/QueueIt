@@ -54,6 +54,7 @@ export class SchemaFallbackManager {
   has_collection_id = false;
   has_read_progress = false;
   has_notes = false;
+  has_processing_error = false;
   has_source_type = false;
   has_source_domain = false;
   has_logo_url = false;
@@ -100,6 +101,7 @@ export class SchemaFallbackManager {
             this.has_collection_id = 'collection_id' in props;
             this.has_read_progress = 'read_progress' in props;
             this.has_notes = 'notes' in props;
+            this.has_processing_error = 'processing_error' in props;
             this.has_source_type = 'source_type' in props;
             this.has_source_domain = 'source_domain' in props;
             this.has_logo_url = 'logo_url' in props;
@@ -136,6 +138,7 @@ export class SchemaFallbackManager {
       for (const col of [
         'full_summary TEXT', 'estimated_time_minutes REAL',
         'actual_time_spent REAL DEFAULT 0.0', 'normalized_url TEXT',
+        'processing_error TEXT',
       ]) {
         try { await dbRun(db, `ALTER TABLE local_item_meta ADD COLUMN ${col}`); } catch { /* exists */ }
       }
@@ -276,6 +279,7 @@ export class SchemaFallbackManager {
     if (this.has_collection_id) cols.push('collection_id');
     if (this.has_read_progress) cols.push('read_progress');
     if (this.has_notes) cols.push('notes');
+    if (this.has_processing_error) cols.push('processing_error');
     if (this.has_full_summary) cols.push('full_summary');
     if (this.has_estimated_time_minutes) cols.push('estimated_time_minutes');
     if (this.has_actual_time_spent) cols.push('actual_time_spent');
@@ -379,11 +383,12 @@ export class SchemaFallbackManager {
     const needsCol = !this.has_collection_id;
     const needsProg = !this.has_read_progress;
     const needsNotes = !this.has_notes;
+    const needsProcErr = !this.has_processing_error;
     const needsFS = !this.has_full_summary;
     const needsEst = !this.has_estimated_time_minutes;
     const needsSpent = !this.has_actual_time_spent;
 
-    if (!needsCol && !needsProg && !needsNotes && !needsFS && !needsEst && !needsSpent) return items;
+    if (!needsCol && !needsProg && !needsNotes && !needsProcErr && !needsFS && !needsEst && !needsSpent) return items;
 
     const itemIds = items.map((i) => i.id).filter(Boolean);
     if (!itemIds.length) return items;
@@ -400,6 +405,9 @@ export class SchemaFallbackManager {
         if (needsCol) item.collection_id = local.collection_id ?? null;
         if (needsProg) item.read_progress = local.read_progress ?? 0;
         if (needsNotes) item.notes = local.notes ?? null;
+        if (needsProcErr) item.processing_error = local.processing_error ?? local.notes ?? null;
+        if (!item.processing_error && item.notes) item.processing_error = item.notes;
+        if (!item.notes && item.processing_error) item.notes = item.processing_error;
         if (needsFS) item.full_summary = local.full_summary ?? null;
         if (needsEst) {
           item.estimated_time_minutes = local.estimated_time_minutes ??
@@ -425,6 +433,7 @@ export class SchemaFallbackManager {
         (field === 'collection_id' && this.has_collection_id) ||
         (field === 'read_progress' && this.has_read_progress) ||
         (field === 'notes' && this.has_notes) ||
+        (field === 'processing_error' && this.has_processing_error) ||
         (field === 'full_summary' && this.has_full_summary) ||
         (field === 'estimated_time_minutes' && this.has_estimated_time_minutes) ||
         (field === 'actual_time_spent' && this.has_actual_time_spent);
@@ -444,17 +453,18 @@ export class SchemaFallbackManager {
           const nc = localFields.collection_id ?? existing.collection_id;
           const np = localFields.read_progress ?? existing.read_progress;
           const nn = localFields.notes ?? existing.notes;
+          const npe = localFields.processing_error ?? existing.processing_error ?? nn;
           const nf = localFields.full_summary ?? existing.full_summary;
           const ne = localFields.estimated_time_minutes ?? existing.estimated_time_minutes;
           const ns = localFields.actual_time_spent ?? existing.actual_time_spent;
           await dbRun(db, 
-            'UPDATE local_item_meta SET collection_id=?, read_progress=?, notes=?, full_summary=?, estimated_time_minutes=?, actual_time_spent=? WHERE item_id=?',
-            [nc, np, nn, nf, ne, ns, itemId]);
+            'UPDATE local_item_meta SET collection_id=?, read_progress=?, notes=?, processing_error=?, full_summary=?, estimated_time_minutes=?, actual_time_spent=? WHERE item_id=?',
+            [nc, np, nn, npe, nf, ne, ns, itemId]);
         } else {
           await dbRun(db,
-            'INSERT INTO local_item_meta (item_id, user_id, collection_id, read_progress, notes, full_summary, estimated_time_minutes, actual_time_spent) VALUES (?,?,?,?,?,?,?,?)',
+            'INSERT INTO local_item_meta (item_id, user_id, collection_id, read_progress, notes, processing_error, full_summary, estimated_time_minutes, actual_time_spent) VALUES (?,?,?,?,?,?,?,?,?)',
             [itemId, userId, localFields.collection_id ?? null, localFields.read_progress ?? 0,
-             localFields.notes ?? null, localFields.full_summary ?? null,
+             localFields.notes ?? null, localFields.processing_error ?? localFields.notes ?? null, localFields.full_summary ?? null,
              localFields.estimated_time_minutes ?? 5.0, localFields.actual_time_spent ?? 0.0]);
         }
       } finally { db.close(); }

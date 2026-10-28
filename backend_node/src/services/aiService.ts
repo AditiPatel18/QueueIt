@@ -86,14 +86,14 @@ Return ONLY the final translated English text without any explanations, meta-com
 Text:
 ${text.substring(0, 10000)}`;
 
-  const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+  const models = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
   for (const model of models) {
     try {
       const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(8000),
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
@@ -549,7 +549,7 @@ export class AIService {
     }
 
     const preparedContent = prepareContentForSummarization(snippet, 12000);
-    const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+    const models = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
 
     const primaryPrompt = `You are an expert technical content summarizer designed to provide the kind of high-value, direct overview seen in YouTube's native AI summaries.
 
@@ -586,7 +586,7 @@ STRICT INSTRUCTIONS:
         const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(8000),
           body: JSON.stringify({
             contents: [{ parts: [{ text: primaryPrompt }] }],
             generationConfig: {
@@ -647,7 +647,7 @@ ${preparedContent}
         const retryRes = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(8000),
           body: JSON.stringify({
             contents: [{ parts: [{ text: correctionPrompt }] }],
             generationConfig: {
@@ -694,7 +694,7 @@ ${preparedContent}
     url: string,
     userId: string,
     titleOverride?: string | null
-  ): Promise<void> {
+  ): Promise<{ success: boolean; error?: string }> {
     const ENRICHMENT_TIMEOUT_MS = 60000;
     const currentRunId = Date.now() + Math.random();
     AIService.activeEnrichmentRuns.set(itemId, currentRunId);
@@ -745,7 +745,10 @@ ${preparedContent}
 
       // Update processing_status to 'processing'
       try {
-        await supabase.from('items').update({ processing_status: 'processing' }).eq('id', itemId);
+        await supabase.from('items').update({
+          processing_status: 'processing',
+          updated_at: new Date().toISOString(),
+        }).eq('id', itemId);
       } catch (err: any) {
         console.warn(`[Item ${itemId}] Failed to update processing_status to processing: ${err?.message}`);
       }
@@ -771,21 +774,26 @@ ${preparedContent}
           if (!extractionResult.success || !extractionResult.transcript || !extractionResult.transcript.trim()) {
             const failReason = extractionResult.error || 'No transcript or captions available for this video.';
             console.warn(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_FAILED] Duration: ${extDurMs}ms | Reason: ${failReason}`);
-            if (isTimedOut || signal.aborted) return;
+            if (isTimedOut || signal.aborted) return { success: false, error: failReason };
 
+            const nowIso = new Date().toISOString();
             const failPayload: Record<string, any> = {
               processing_status: 'failed',
               ai_summary: null,
               title,
+              updated_at: nowIso,
             };
             if (ytDurationSeconds > 0) failPayload.duration_seconds = ytDurationSeconds;
 
             await supabase.from('items').update(failPayload).eq('id', itemId);
             try {
-              await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[Extraction Failed] ${failReason}` }, supabase);
+              await fallbackDb.updateItemMetadata(userId, itemId, {
+                notes: `[Extraction Failed] ${failReason}`,
+                processing_error: `[Extraction Failed] ${failReason}`,
+              }, supabase);
             } catch { /* non-fatal */ }
             console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: ${failReason}`);
-            return;
+            return { success: false, error: failReason };
           }
 
           snippet = extractionResult.transcript;
@@ -807,17 +815,22 @@ ${preparedContent}
 
       if (!snippet || !snippet.trim() || snippet.trim().length < 20) {
         console.warn(`[Item ${itemId}] [Stage: TRANSCRIPT_EXTRACTION_FAILED] Reason: No usable text content could be extracted`);
-        if (isTimedOut || signal.aborted) return;
+        if (isTimedOut || signal.aborted) return { success: false, error: 'No usable text content' };
+        const nowIso = new Date().toISOString();
         const failPayload: Record<string, any> = {
           processing_status: 'failed',
           ai_summary: null,
+          updated_at: nowIso,
         };
         await supabase.from('items').update(failPayload).eq('id', itemId);
         try {
-          await fallbackDb.updateItemMetadata(userId, itemId, { notes: '[Extraction Failed] No usable text content' }, supabase);
+          await fallbackDb.updateItemMetadata(userId, itemId, {
+            notes: '[Extraction Failed] No usable text content',
+            processing_error: '[Extraction Failed] No usable text content',
+          }, supabase);
         } catch { /* non-fatal */ }
         console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: No usable text content`);
-        return;
+        return { success: false, error: 'No usable text content' };
       }
 
       console.log(`[AIService] Stage 1: source loaded for item ${itemId} (${snippet.length} chars)`);
@@ -867,18 +880,23 @@ ${preparedContent}
       if (!result.summary || !result.summary.trim()) {
         const failReason = result.error || 'Gemini summary generation failed quality validation.';
         console.warn(`[Item ${itemId}] [Stage: SUMMARY_VALIDATION_COMPLETED] Status: INVALID (${failReason})`);
-        if (isTimedOut || signal.aborted) return;
+        if (isTimedOut || signal.aborted) return { success: false, error: failReason };
 
+        const nowIso = new Date().toISOString();
         const failPayload: Record<string, any> = {
           processing_status: 'failed',
           ai_summary: null,
+          updated_at: nowIso,
         };
         await supabase.from('items').update(failPayload).eq('id', itemId);
         try {
-          await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[AI Generation Failed] ${failReason}` }, supabase);
+          await fallbackDb.updateItemMetadata(userId, itemId, {
+            notes: `[AI Generation Failed] ${failReason}`,
+            processing_error: `[AI Generation Failed] ${failReason}`,
+          }, supabase);
         } catch { /* non-fatal */ }
         console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: ${failReason}`);
-        return;
+        return { success: false, error: failReason };
       }
 
       console.log(`[AIService] Stage 4: summary validated for item ${itemId}`);
@@ -906,18 +924,20 @@ ${preparedContent}
       // STAGE 5: database save (guard against writing if timed out or superseded by newer run)
       if (isTimedOut || signal.aborted || AIService.activeEnrichmentRuns.get(itemId) !== currentRunId) {
         console.warn(`[Item ${itemId}] Discarding late summary save because operation timed out or was superseded.`);
-        return;
+        return { success: false, error: 'Pipeline timed out or was superseded' };
       }
 
       const tDb0 = Date.now();
       console.log(`[Item ${itemId}] [Stage: DATABASE_SAVE_STARTED] Saving summary and metadata to database`);
 
+      const nowIso = new Date().toISOString();
       const updatePayload: Record<string, any> = {
         ai_summary: result.summary,
         tags: result.tags,
         processing_status: 'completed',
         estimated_read_time: estimatedReadTime,
         priority_score: result.priority,
+        updated_at: nowIso,
       };
 
       if (ytDurationSeconds > 0) {
@@ -936,41 +956,51 @@ ${preparedContent}
           processing_status: 'completed',
           priority_score: result.priority,
           estimated_read_time: estimatedReadTime,
+          updated_at: nowIso,
         };
         if (ytDurationSeconds > 0) safePayload.duration_seconds = ytDurationSeconds;
         await supabase.from('items').update(safePayload).eq('id', itemId);
       }
 
       try {
-        await fallbackDb.updateItemMetadata(userId, itemId, { estimated_time_minutes: estimatedTimeMinutes, collection_id: collectionId, notes: null }, supabase);
+        await fallbackDb.updateItemMetadata(userId, itemId, {
+          estimated_time_minutes: estimatedTimeMinutes,
+          collection_id: collectionId,
+          notes: null,
+          processing_error: null,
+        }, supabase);
       } catch { /* non-fatal */ }
 
       const dbDurMs = Date.now() - tDb0;
       const summaryWordCount = result.summary.split(/\s+/).filter(Boolean).length;
       console.log(`[Item ${itemId}] [Stage: DATABASE_SAVE_COMPLETED] Duration: ${dbDurMs}ms | Summary length: ${result.summary.length} chars, ${summaryWordCount} words`);
       console.log(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: completed`);
-    })().catch((internalErr) => {
-      if (!isTimedOut && !signal.aborted) {
-        console.error(`[Item ${itemId}] Uncaught error inside enrichment execution:`, internalErr?.message || internalErr);
-      }
-    });
+      return { success: true };
+    })();
 
     try {
-      await Promise.race([executionPromise, timeoutPromise]);
+      const outcome = await Promise.race([executionPromise, timeoutPromise]);
+      return outcome || { success: true };
     } catch (err: any) {
       if (AIService.activeEnrichmentRuns.get(itemId) !== currentRunId) {
         console.warn(`[Item ${itemId}] Discarding error handling because it was superseded by a newer run.`);
-        return;
+        return { success: false, error: 'Pipeline superseded by a newer retry request' };
       }
       const failReason = isTimedOut ? `Enrichment pipeline timed out after ${ENRICHMENT_TIMEOUT_MS / 1000}s` : (err?.message || String(err));
       console.error(`[Item ${itemId}] [Stage: FINAL_STATUS] Status: failed | Reason: ${failReason}`);
+      const nowIso = new Date().toISOString();
       try {
         await supabase.from('items').update({
           processing_status: 'failed',
           ai_summary: null,
+          updated_at: nowIso,
         }).eq('id', itemId);
-        await fallbackDb.updateItemMetadata(userId, itemId, { notes: `[Extraction Failed] ${failReason}` }, supabase);
+        await fallbackDb.updateItemMetadata(userId, itemId, {
+          notes: `[Extraction Failed] ${failReason}`,
+          processing_error: `[Extraction Failed] ${failReason}`,
+        }, supabase);
       } catch { /* non-fatal */ }
+      return { success: false, error: failReason };
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (AIService.activeEnrichmentRuns.get(itemId) === currentRunId) {

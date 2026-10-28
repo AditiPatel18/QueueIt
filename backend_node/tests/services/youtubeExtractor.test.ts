@@ -302,4 +302,162 @@ This is a test transcript line.`;
       expect(completedCalls.length).toBe(1);
     });
   });
+
+  describe('Test 6: YouTube Backoff Behavior & Differentiating Rate Limits', () => {
+    beforeEach(() => {
+      YouTubeExtractor.clearBackoff('test-vid-1');
+      YouTubeExtractor.clearBackoff('test-vid-2');
+      YouTubeExtractor.clearBackoff('test-vid-rl');
+    });
+
+    it('should distinguish genuine rate-limit failures from ordinary extraction failures', () => {
+      // Ordinary failure (e.g. anti-bot or network glitch)
+      YouTubeExtractor.recordFailure('test-vid-1', false, 'Anti-bot verification required');
+      const backoffOrdinary = YouTubeExtractor.isVideoInBackoff('test-vid-1');
+      expect(backoffOrdinary.inBackoff).toBe(true);
+      expect(backoffOrdinary.isRateLimited).toBe(false);
+      expect(backoffOrdinary.reason).toBe('Anti-bot verification required');
+      // Cooldown for non-rate limit should be ~15s, not minutes
+      expect(backoffOrdinary.backoffUntil! - Date.now()).toBeLessThanOrEqual(16000);
+
+      // Genuine rate-limit failure (HTTP 429)
+      YouTubeExtractor.recordFailure('test-vid-2', true, 'HTTP 429 Too Many Requests');
+      const backoffRateLimit = YouTubeExtractor.isVideoInBackoff('test-vid-2');
+      expect(backoffRateLimit.inBackoff).toBe(true);
+      expect(backoffRateLimit.isRateLimited).toBe(true);
+      // Cooldown for first rate limit should be ~2 minutes (120,000ms)
+      expect(backoffRateLimit.backoffUntil! - Date.now()).toBeGreaterThan(60000);
+    });
+
+    it('should allow clearing backoff for non-rate-limit failures on manual retry', () => {
+      YouTubeExtractor.recordFailure('test-vid-1', false, 'Transient error');
+      expect(YouTubeExtractor.isVideoInBackoff('test-vid-1').inBackoff).toBe(true);
+
+      YouTubeExtractor.clearBackoff('test-vid-1');
+      expect(YouTubeExtractor.isVideoInBackoff('test-vid-1').inBackoff).toBe(false);
+    });
+
+    it('should preserve sensible exponential cooldown behavior for genuine rate limits', () => {
+      YouTubeExtractor.recordFailure('test-vid-rl', true, 'HTTP 429');
+      const step1 = YouTubeExtractor.isVideoInBackoff('test-vid-rl');
+      expect(step1.backoffUntil! - Date.now()).toBeGreaterThan(100000); // ~2 min
+
+      YouTubeExtractor.recordFailure('test-vid-rl', true, 'HTTP 429');
+      const step2 = YouTubeExtractor.isVideoInBackoff('test-vid-rl');
+      expect(step2.backoffUntil! - Date.now()).toBeGreaterThan(250000); // ~5 min
+
+      YouTubeExtractor.clearBackoff('test-vid-rl');
+    });
+
+    it('should prevent concurrent extraction requests for the same video ID', async () => {
+      const videoId = 'c0ncurr_tst';
+      const url = `https://www.youtube.com/watch?v=${videoId}`;
+      YouTubeExtractor.clearBackoff(videoId);
+
+      expect(YouTubeExtractor.extractVideoId(url)).toBe(videoId);
+
+      let resolveFirstCall: any;
+      const firstCallPromise = new Promise((resolve) => { resolveFirstCall = resolve; });
+
+      const execRunnerSpy = jest.spyOn(YouTubeExtractor, 'execRunner').mockImplementation(async (file, args) => {
+        if (args.includes('--version')) return { stdout: '2026.08.19', stderr: '' };
+        await firstCallPromise;
+        return { stdout: `${videoId}|||120|||Concurrent Test Title`, stderr: '' };
+      });
+
+      try {
+        const extractionPromise1 = YouTubeExtractor.extractYouTubeContent(url);
+        // Call immediately a second time while call 1 is active
+        const result2 = await YouTubeExtractor.extractYouTubeContent(url);
+
+        expect(result2.success).toBe(false);
+        expect(result2.error).toContain('Extraction already in progress');
+        expect(result2.extractionMethod).toContain('concurrent lock');
+
+        // Resolve first call
+        resolveFirstCall();
+        await extractionPromise1;
+      } finally {
+        execRunnerSpy.mockRestore();
+        YouTubeExtractor.clearBackoff(videoId);
+      }
+    });
+  });
+
+  describe('Test 7: YouTube Extractor Error Categorization', () => {
+    beforeEach(() => {
+      YouTubeExtractor.clearBackoff('err_tst_429');
+      YouTubeExtractor.clearBackoff('err_tst_bot');
+      YouTubeExtractor.clearBackoff('err_tst_noc');
+    });
+
+    it('should classify HTTP 429 as genuine rate limit with isRateLimited: true', async () => {
+      const videoId = 'err_tst_429';
+      const url = `https://www.youtube.com/watch?v=${videoId}`;
+
+      jest.spyOn(YouTubeExtractor, 'execRunner').mockImplementation(async (file, args) => {
+        if (args.includes('--version')) return { stdout: '2026.08.19', stderr: '' };
+        const err: any = new Error('Command failed');
+        err.stderr = 'ERROR: [youtube] err_tst_429: HTTP Error 429: Too Many Requests';
+        throw err;
+      });
+
+      const result = await YouTubeExtractor.extractYouTubeContent(url);
+      expect(result.success).toBe(false);
+      expect(result.isRateLimited).toBe(true);
+      expect(result.error).toContain('HTTP 429');
+
+      const backoff = YouTubeExtractor.isVideoInBackoff(videoId);
+      expect(backoff.inBackoff).toBe(true);
+      expect(backoff.isRateLimited).toBe(true);
+
+      (YouTubeExtractor.execRunner as jest.Mock).mockRestore();
+      YouTubeExtractor.clearBackoff(videoId);
+    });
+
+    it('should classify bot/LOGIN_REQUIRED detection with isRateLimited: false and specific user message', async () => {
+      const videoId = 'err_tst_bot';
+      const url = `https://www.youtube.com/watch?v=${videoId}`;
+
+      jest.spyOn(YouTubeExtractor, 'execRunner').mockImplementation(async (file, args) => {
+        if (args.includes('--version')) return { stdout: '2026.08.19', stderr: '' };
+        const err: any = new Error('Command failed');
+        err.stderr = 'ERROR: [youtube] err_tst_bot: Sign in to confirm you’re not a bot. This helps protect our community.';
+        throw err;
+      });
+
+      const result = await YouTubeExtractor.extractYouTubeContent(url);
+      expect(result.success).toBe(false);
+      expect(result.isRateLimited).toBe(false);
+      expect(result.error).toContain('anti-bot verification or sign-in required');
+
+      const backoff = YouTubeExtractor.isVideoInBackoff(videoId);
+      expect(backoff.inBackoff).toBe(true);
+      expect(backoff.isRateLimited).toBe(false);
+
+      (YouTubeExtractor.execRunner as jest.Mock).mockRestore();
+      YouTubeExtractor.clearBackoff(videoId);
+    });
+
+    it('should classify missing captions with isRateLimited: false', async () => {
+      const videoId = 'err_tst_noc';
+      const url = `https://www.youtube.com/watch?v=${videoId}`;
+
+      jest.spyOn(YouTubeExtractor, 'execRunner').mockImplementation(async (file, args) => {
+        if (args.includes('--version')) return { stdout: '2026.08.19', stderr: '' };
+        if (args.includes('--skip-download') && args.includes('--print')) {
+          return { stdout: `${videoId}|||300|||Valid Title`, stderr: '' };
+        }
+        return { stdout: '', stderr: 'WARNING: video has no subtitles' };
+      });
+
+      const result = await YouTubeExtractor.extractYouTubeContent(url);
+      expect(result.success).toBe(false);
+      expect(result.isRateLimited).toBe(false);
+      expect(result.error).toContain('No subtitles or captions available');
+
+      (YouTubeExtractor.execRunner as jest.Mock).mockRestore();
+      YouTubeExtractor.clearBackoff(videoId);
+    });
+  });
 });

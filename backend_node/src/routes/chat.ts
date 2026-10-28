@@ -105,7 +105,7 @@ async function generateGeminiChatStream(
   apiKey: string,
   onChunk: (text: string) => void
 ): Promise<boolean> {
-  const models = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+  const models = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
 
   for (const model of models) {
     try {
@@ -113,6 +113,7 @@ async function generateGeminiChatStream(
       const res = await fetch(streamUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(8000),
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {

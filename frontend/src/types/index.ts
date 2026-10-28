@@ -31,6 +31,7 @@ export interface QueueItem {
   audio_url?: string | null;
   collection_id?: string | null;
   notes?: string | null;
+  processing_error?: string | null;
   read_progress: number;
   actual_time_spent?: number | null;
   estimated_time_minutes?: number | null;

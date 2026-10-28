@@ -31,4 +31,3 @@ export function getScopedSupabaseClient(token?: string) {
   }
   return supabase;
 }
-

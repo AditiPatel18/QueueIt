@@ -659,7 +659,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                     <div className="flex gap-2 items-center min-w-0 flex-1">
                       <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
                       <p className="leading-relaxed font-semibold text-red-600 dark:text-red-400 truncate">
-                        {(item as any).notes?.replace('[Extraction Failed] ', '') || "Extraction failed"}
+                        {(item.processing_error || item.notes)?.replace('[Extraction Failed] ', '').replace('[AI Generation Failed] ', '') || "Extraction failed"}
                       </p>
                     </div>
                     <Button 
@@ -978,7 +978,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
                     </h4>
                     <p className="text-xs text-red-600 dark:text-red-400 font-semibold leading-relaxed bg-red-500/5 rounded p-2.5 border border-red-500/10">
-                      {(item as any).notes?.replace('[Extraction Failed] ', '') || "Extraction failed"}
+                      {(item.processing_error || item.notes)?.replace('[Extraction Failed] ', '').replace('[AI Generation Failed] ', '') || "Extraction failed"}
                     </p>
                   </div>
                 ) : (item.full_summary || (item.ai_summary && item.ai_summary !== "Transcript unavailable" && item.ai_summary !== "Summary unavailable")) ? (
