@@ -640,7 +640,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                       {isRetryingAI ? "Retrying..." : "Retry AI"}
                     </Button>
                   </div>
-                ) : (item.processing_status === "queued" || item.processing_status === "processing") ? (
+                ) : (!item.processing_error && (item.processing_status === "queued" || item.processing_status === "processing")) ? (
                   <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center bg-purple-500/5 rounded-lg p-2 border border-purple-500/10 animate-pulse">
                     <Loader2 className="h-4 w-4 text-purple-400 animate-spin shrink-0" />
                     <p className="leading-relaxed font-semibold text-purple-400">
@@ -654,7 +654,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                       Summary generation queued. It will be generated automatically shortly.
                     </p>
                   </div>
-                ) : (item.processing_status === "failed") ? (
+                ) : (item.processing_status === "failed" || item.processing_error) ? (
                   <div className="mb-2 text-xs text-muted-foreground flex gap-2 items-center justify-between bg-red-500/5 rounded-lg p-2 border border-red-500/10">
                     <div className="flex gap-2 items-center min-w-0 flex-1">
                       <AlertTriangle className="h-4 w-4 text-red-500 shrink-0" />
@@ -954,7 +954,16 @@ export const QueueItemCard = memo(function QueueItemCard({
                 )}
 
                 {/* 4. Full AI summary & details preview */}
-                {(item.processing_status === "queued" || item.processing_status === "processing") ? (
+                {isStaleProcessing ? (
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-amber-500 uppercase tracking-wider flex items-center gap-1">
+                      <AlertTriangle className="h-3.5 w-3.5" /> Full AI Summary
+                    </h4>
+                    <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold leading-relaxed bg-amber-500/5 rounded p-2.5 border border-amber-500/10">
+                      Summary generation timed out. Click Retry AI to re-extract.
+                    </p>
+                  </div>
+                ) : (!item.processing_error && (item.processing_status === "queued" || item.processing_status === "processing")) ? (
                   <div className="space-y-1 animate-pulse">
                     <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary
@@ -972,7 +981,7 @@ export const QueueItemCard = memo(function QueueItemCard({
                       Summary generation queued. It will be generated automatically shortly.
                     </p>
                   </div>
-                ) : (item.processing_status === "failed") ? (
+                ) : (item.processing_status === "failed" || item.processing_error) ? (
                   <div className="space-y-1">
                     <h4 className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
                       <Sparkles className="h-3.5 w-3.5" /> Full AI Summary

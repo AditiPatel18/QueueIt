@@ -308,6 +308,12 @@ This is a test transcript line.`;
       YouTubeExtractor.clearBackoff('test-vid-1');
       YouTubeExtractor.clearBackoff('test-vid-2');
       YouTubeExtractor.clearBackoff('test-vid-rl');
+      YouTubeExtractor.clearBackoff('c0ncurr_tst');
+      YouTubeExtractor.resetGlobalRateLimit();
+    });
+
+    afterEach(() => {
+      YouTubeExtractor.resetGlobalRateLimit();
     });
 
     it('should distinguish genuine rate-limit failures from ordinary extraction failures', () => {
@@ -389,6 +395,10 @@ This is a test transcript line.`;
       YouTubeExtractor.clearBackoff('err_tst_429');
       YouTubeExtractor.clearBackoff('err_tst_bot');
       YouTubeExtractor.clearBackoff('err_tst_noc');
+      YouTubeExtractor.clearBackoff('err_meta_429');
+      YouTubeExtractor.clearBackoff('err_subs_429');
+      YouTubeExtractor.clearBackoff('vid_other_1');
+      YouTubeExtractor.resetGlobalRateLimit();
     });
 
     it('should classify HTTP 429 as genuine rate limit with isRateLimited: true', async () => {
@@ -413,6 +423,103 @@ This is a test transcript line.`;
 
       (YouTubeExtractor.execRunner as jest.Mock).mockRestore();
       YouTubeExtractor.clearBackoff(videoId);
+      YouTubeExtractor.resetGlobalRateLimit();
+    });
+
+    it('should halt immediately on metadata HTTP 429 without attempting subtitle extraction', async () => {
+      const videoId = 'err_meta_429';
+      const url = `https://www.youtube.com/watch?v=${videoId}`;
+
+      const executedArgs: string[][] = [];
+      jest.spyOn(YouTubeExtractor, 'execRunner').mockImplementation(async (file, args) => {
+        executedArgs.push(args);
+        if (args.includes('--version')) return { stdout: '2026.08.19', stderr: '' };
+        if (args.includes('--print')) {
+          const err: any = new Error('Command failed');
+          err.stderr = 'ERROR: [youtube] err_meta_429: Unable to download webpage: HTTP Error 429: Too Many Requests';
+          throw err;
+        }
+        return { stdout: '', stderr: '' };
+      });
+
+      const result = await YouTubeExtractor.extractYouTubeContent(url);
+      expect(result.success).toBe(false);
+      expect(result.isRateLimited).toBe(true);
+      expect(result.extractionMethod).toContain('rate-limited');
+
+      // Crucial: Must NOT have called yt-dlp with --write-sub (Stage 2)
+      const subCall = executedArgs.find(args => args.includes('--write-sub'));
+      expect(subCall).toBeUndefined();
+
+      (YouTubeExtractor.execRunner as jest.Mock).mockRestore();
+      YouTubeExtractor.clearBackoff(videoId);
+      YouTubeExtractor.resetGlobalRateLimit();
+    });
+
+    it('should halt on primary subtitle HTTP 429 without attempting native-caption fallback', async () => {
+      const videoId = 'err_subs_429';
+      const url = `https://www.youtube.com/watch?v=${videoId}`;
+
+      const executedArgs: string[][] = [];
+      jest.spyOn(YouTubeExtractor, 'execRunner').mockImplementation(async (file, args) => {
+        executedArgs.push(args);
+        if (args.includes('--version')) return { stdout: '2026.08.19', stderr: '' };
+        if (args.includes('--print')) {
+          return { stdout: `${videoId}|||300|||Sample Title`, stderr: '' };
+        }
+        if (args.includes('--write-sub')) {
+          const err: any = new Error('Subtitle command failed');
+          err.stderr = 'ERROR: [youtube] err_subs_429: HTTP Error 429: Too Many Requests';
+          throw err;
+        }
+        return { stdout: '', stderr: '' };
+      });
+
+      const result = await YouTubeExtractor.extractYouTubeContent(url);
+      expect(result.success).toBe(false);
+      expect(result.isRateLimited).toBe(true);
+      expect(result.error).toContain('HTTP 429');
+
+      // Crucial: Exactly one --write-sub call (primary), zero fallback calls
+      const subCalls = executedArgs.filter(args => args.includes('--write-sub'));
+      expect(subCalls.length).toBe(1);
+
+      (YouTubeExtractor.execRunner as jest.Mock).mockRestore();
+      YouTubeExtractor.clearBackoff(videoId);
+      YouTubeExtractor.resetGlobalRateLimit();
+    });
+
+    it('should enforce global server rate limit and skip yt-dlp calls for subsequent videos during cooldown', async () => {
+      const video1 = 'err_tst_429';
+      const video2 = 'vid_other_1';
+
+      let ytDlpCallCount = 0;
+      jest.spyOn(YouTubeExtractor, 'execRunner').mockImplementation(async (file, args) => {
+        if (args.includes('--version')) return { stdout: '2026.08.19', stderr: '' };
+        ytDlpCallCount++;
+        const err: any = new Error('Rate limited');
+        err.stderr = 'ERROR: [youtube] HTTP Error 429: Too Many Requests';
+        throw err;
+      });
+
+      // Video 1 triggers rate limit
+      const res1 = await YouTubeExtractor.extractYouTubeContent(`https://www.youtube.com/watch?v=${video1}`);
+      expect(res1.isRateLimited).toBe(true);
+      expect(YouTubeExtractor.isGlobalRateLimited()).toBe(true);
+      const callsAfterFirst = ytDlpCallCount;
+
+      // Video 2 is processed while server is on global rate-limit cooldown
+      const res2 = await YouTubeExtractor.extractYouTubeContent(`https://www.youtube.com/watch?v=${video2}`);
+      expect(res2.success).toBe(false);
+      expect(res2.isRateLimited).toBe(true);
+      expect(res2.extractionMethod).toContain('global cooldown');
+      // yt-dlp should NOT have been called for Video 2!
+      expect(ytDlpCallCount).toBe(callsAfterFirst);
+
+      (YouTubeExtractor.execRunner as jest.Mock).mockRestore();
+      YouTubeExtractor.clearBackoff(video1);
+      YouTubeExtractor.clearBackoff(video2);
+      YouTubeExtractor.resetGlobalRateLimit();
     });
 
     it('should classify bot/LOGIN_REQUIRED detection with isRateLimited: false and specific user message', async () => {

@@ -30,6 +30,10 @@ interface BackoffState {
 // In-memory exponential backoff map per videoId
 const ytBackoffMap = new Map<string, BackoffState>();
 
+// Global host-level rate limit state to protect the IP from being hammered
+let globalYtRateLimitUntil = 0;
+let globalRateLimitCount = 0;
+
 // In-flight extraction requests to prevent multiple concurrent yt-dlp calls for the same video
 const activeExtractions = new Set<string>();
 
@@ -43,6 +47,28 @@ export interface YtDlpDiagnosticInfo {
 export class YouTubeExtractor {
   public static execRunner = (file: string, args: string[], options: any): Promise<{ stdout: string; stderr: string }> =>
     execFileAsync(file, args, options) as any;
+
+  public static isGlobalRateLimited(): boolean {
+    if (Date.now() < globalYtRateLimitUntil) {
+      return true;
+    }
+    if (globalYtRateLimitUntil > 0) {
+      globalYtRateLimitUntil = 0;
+    }
+    return false;
+  }
+
+  public static getGlobalRateLimitRemainingSec(): number {
+    if (Date.now() < globalYtRateLimitUntil) {
+      return Math.ceil((globalYtRateLimitUntil - Date.now()) / 1000);
+    }
+    return 0;
+  }
+
+  public static resetGlobalRateLimit(): void {
+    globalYtRateLimitUntil = 0;
+    globalRateLimitCount = 0;
+  }
 
   public static resolveYtDlpPath(): string {
     if (process.env.YTDLP_PATH && process.env.YTDLP_PATH.trim()) {
@@ -157,11 +183,20 @@ export class YouTubeExtractor {
   public static recordFailure(videoId: string, isRateLimited: boolean, reason?: string): void {
     const existing = ytBackoffMap.get(videoId) || { failureCount: 0, backoffUntil: 0, isRateLimited: false };
     const count = existing.failureCount + 1;
-    // Genuine rate limit backoff: 2 min, 5 min, 15 min
-    // Non-rate-limited failure backoff: short circuit-breaker cooldown (15 sec, 30 sec, 60 sec)
-    const delayMs = isRateLimited
-      ? (count === 1 ? 2 * 60 * 1000 : count === 2 ? 5 * 60 * 1000 : 15 * 60 * 1000)
-      : (count === 1 ? 15 * 1000 : count === 2 ? 30 * 1000 : 60 * 1000);
+
+    let delayMs = 0;
+    if (isRateLimited) {
+      globalRateLimitCount = Math.min(globalRateLimitCount + 1, 5);
+      // Exponential backoff with jitter: 3 min (1st), 7 min (2nd), 15 min (3rd+)
+      const baseDelayMs = globalRateLimitCount === 1 ? 3 * 60 * 1000 : globalRateLimitCount === 2 ? 7 * 60 * 1000 : 15 * 60 * 1000;
+      const jitterMs = Math.floor(Math.random() * 30000); // 0-30s random jitter
+      delayMs = baseDelayMs + jitterMs;
+      globalYtRateLimitUntil = Math.max(globalYtRateLimitUntil, Date.now() + delayMs);
+    } else {
+      // Non-rate-limited failure: short circuit-breaker cooldown (15 sec, 30 sec, 60 sec)
+      delayMs = count === 1 ? 15 * 1000 : count === 2 ? 30 * 1000 : 60 * 1000;
+    }
+
     const backoffUntil = Date.now() + delayMs;
     ytBackoffMap.set(videoId, { failureCount: count, backoffUntil, isRateLimited, reason });
   }
@@ -172,6 +207,10 @@ export class YouTubeExtractor {
 
   public static recordSuccess(videoId: string): void {
     ytBackoffMap.delete(videoId);
+    globalRateLimitCount = Math.max(0, globalRateLimitCount - 1);
+    if (globalRateLimitCount === 0) {
+      globalYtRateLimitUntil = 0;
+    }
   }
 
   public static cleanVttCaptionText(rawVtt: string): string {
@@ -216,7 +255,6 @@ export class YouTubeExtractor {
     options?: { signal?: AbortSignal; itemId?: string }
   ): Promise<YouTubeExtractionResult> {
     const videoId = this.extractVideoId(url);
-    const ytDlpVersion = await this.getYtDlpVersion();
     const logPrefix = options?.itemId ? `[Item ${options.itemId}] [YouTube]` : `[YouTube Extract]`;
 
     if (!videoId) {
@@ -225,12 +263,45 @@ export class YouTubeExtractor {
         videoId: '',
         url,
         extractionMethod: 'yt-dlp',
-        ytDlpVersion,
+        ytDlpVersion: 'unknown',
         transcriptLength: 0,
         error: 'Invalid YouTube URL: Could not extract video ID',
       };
     }
 
+    // 1. Check in-flight concurrent extractions for the exact same video
+    if (activeExtractions.has(videoId)) {
+      console.warn(`${logPrefix} Extraction for videoId=${videoId} is already in progress.`);
+      return {
+        success: false,
+        videoId,
+        url,
+        extractionMethod: 'yt-dlp (concurrent lock)',
+        ytDlpVersion: 'unknown',
+        transcriptLength: 0,
+        error: 'Extraction already in progress for this video. Please wait.',
+      };
+    }
+
+    // 2. Check global server-level rate limit
+    if (this.isGlobalRateLimited()) {
+      const waitSec = this.getGlobalRateLimitRemainingSec();
+      const waitMin = Math.ceil(waitSec / 60);
+      const errorMsg = `Extraction paused due to YouTube rate limits on this server (HTTP 429). Retrying in ${waitMin}m.`;
+      console.log(`${logPrefix} Skipping videoId=${videoId} due to active global server cooldown (${waitSec}s remaining).`);
+      return {
+        success: false,
+        videoId,
+        url,
+        extractionMethod: 'yt-dlp (global cooldown active)',
+        ytDlpVersion: 'unknown',
+        transcriptLength: 0,
+        error: errorMsg,
+        isRateLimited: true,
+      };
+    }
+
+    // 3. Check per-video cooldown
     const { inBackoff, backoffUntil, isRateLimited: backoffIsRateLimit, reason: backoffReason } = this.isVideoInBackoff(videoId);
     if (inBackoff && backoffUntil) {
       const waitSec = Math.ceil((backoffUntil - Date.now()) / 1000);
@@ -244,29 +315,18 @@ export class YouTubeExtractor {
         videoId,
         url,
         extractionMethod: 'yt-dlp (cooldown active)',
-        ytDlpVersion,
+        ytDlpVersion: 'unknown',
         transcriptLength: 0,
         error: errorMsg,
         isRateLimited: Boolean(backoffIsRateLimit),
       };
     }
 
-    if (activeExtractions.has(videoId)) {
-      console.warn(`${logPrefix} Extraction for videoId=${videoId} is already in progress.`);
-      return {
-        success: false,
-        videoId,
-        url,
-        extractionMethod: 'yt-dlp (concurrent lock)',
-        ytDlpVersion,
-        transcriptLength: 0,
-        error: 'Extraction already in progress for this video. Please wait.',
-      };
-    }
     activeExtractions.add(videoId);
 
     try {
       const ytDlpPath = this.getYtDlpPath();
+      const ytDlpVersion = await this.getYtDlpVersion();
       const subLangs = this.getSubLangs();
       const metaTimeoutMs = this.getMetadataTimeoutMs();
       const subTimeoutMs = this.getSubtitlesTimeoutMs();
@@ -278,6 +338,7 @@ export class YouTubeExtractor {
         '--print', '%(id)s|||%(duration)s|||%(title)s',
         '--no-playlist',
         '--socket-timeout', '10',
+        '--extractor-retries', '1',
         '--skip-download',
         '--no-warnings',
       ];
@@ -313,26 +374,41 @@ export class YouTubeExtractor {
         const stderr = metaErr?.stderr ? String(metaErr.stderr).trim() : metaErr?.message || String(metaErr);
         console.warn(`${logPrefix} Metadata extraction note: ${stderr.substring(0, 300)}`);
 
-        // Fallback: If playerClient was passed and failed, try standard default args immediately
-        if (playerClient) {
-          try {
-            const fallbackMetaArgs = [
-              '--print', '%(id)s|||%(duration)s|||%(title)s',
-              '--no-playlist',
-              '--socket-timeout', '10',
-              '--skip-download',
-              '--no-warnings',
-              url,
-            ];
-            const fallbackRes = await this.execRunner(ytDlpPath, fallbackMetaArgs, {
-              timeout: metaTimeoutMs,
-              signal: options?.signal,
-            });
-            parseMetaOutput(fallbackRes.stdout || '');
-            if (title) {
-              console.log(`${logPrefix} [Stage: YOUTUBE_META_COMPLETED] (Fallback) Title: "${title}", Duration: ${durationSeconds}s`);
-            }
-          } catch { /* proceed to oembed fallback */ }
+        const is429 = stderr.includes('429') || stderr.toLowerCase().includes('too many requests');
+        if (is429) {
+          console.warn(`${logPrefix} [Stage: YOUTUBE_META_FAILED] YouTube rate limit reached (HTTP 429). Halting extraction to avoid repeated requests.`);
+
+          // Fast oEmbed fallback for title only (does not hit yt-dlp)
+          if (!title) {
+            try {
+              const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, {
+                signal: AbortSignal.timeout(4000),
+              });
+              if (oembedRes.ok) {
+                const oembedData: any = await oembedRes.json();
+                if (oembedData?.title) {
+                  title = String(oembedData.title).trim();
+                  console.log(`${logPrefix} [Stage: YOUTUBE_META_OEMBED] Title from oembed: "${title}"`);
+                }
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          const userMsg = 'YouTube rate limit reached (HTTP 429). Server extraction is temporarily cooling down.';
+          this.recordFailure(videoId, true, userMsg);
+          return {
+            success: false,
+            videoId,
+            url,
+            title,
+            durationSeconds: 0,
+            extractionMethod: 'yt-dlp metadata (rate-limited)',
+            ytDlpVersion,
+            transcriptLength: 0,
+            error: userMsg,
+            stderr: stderr.substring(0, 500),
+            isRateLimited: true,
+          };
         }
 
         const isUnavailable = stderr.toLowerCase().includes('unavailable') || stderr.toLowerCase().includes('private video');
@@ -350,8 +426,29 @@ export class YouTubeExtractor {
             isRateLimited: false,
           };
         }
-        // Note: Do not abort here if metadata hit anti-bot, 429, or format restrictions.
-        // We continue to fetch title via oEmbed and proceed to subtitle extraction.
+
+        // Fallback: If playerClient was passed and failed (non-429), try standard default args immediately
+        if (playerClient) {
+          try {
+            const fallbackMetaArgs = [
+              '--print', '%(id)s|||%(duration)s|||%(title)s',
+              '--no-playlist',
+              '--socket-timeout', '10',
+              '--extractor-retries', '1',
+              '--skip-download',
+              '--no-warnings',
+              url,
+            ];
+            const fallbackRes = await this.execRunner(ytDlpPath, fallbackMetaArgs, {
+              timeout: metaTimeoutMs,
+              signal: options?.signal,
+            });
+            parseMetaOutput(fallbackRes.stdout || '');
+            if (title) {
+              console.log(`${logPrefix} [Stage: YOUTUBE_META_COMPLETED] (Fallback) Title: "${title}", Duration: ${durationSeconds}s`);
+            }
+          } catch { /* proceed to oembed fallback */ }
+        }
       }
 
       // Fast oEmbed fallback for title if yt-dlp metadata returned empty
@@ -398,7 +495,7 @@ export class YouTubeExtractor {
         '--sub-format', 'vtt',
         '--no-playlist',
         '--socket-timeout', '10',
-        '--no-abort-on-error',
+        '--extractor-retries', '1',
         '-o', `${tempPrefix}.%(ext)s`,
       ];
       if (playerClient) {
@@ -437,7 +534,28 @@ export class YouTubeExtractor {
         console.warn(`${logPrefix} File cleanup error:`, fsErr);
       }
 
-      // Fallback subtitle extraction: If primary sub request yielded no files (e.g. 429 on auto-translate or no English track), try native original captions
+      // Check if primary subtitle request hit HTTP 429
+      const isPrimary429 = subStderr.includes('429') || subStderr.toLowerCase().includes('too many requests');
+      if (isPrimary429) {
+        console.warn(`${logPrefix} [Stage: YOUTUBE_SUBTITLES_FAILED] Primary subtitles hit YouTube rate limit (HTTP 429). Skipping fallback subtitle extraction to avoid hammering.`);
+        const userMsg = 'YouTube rate limit reached (HTTP 429). Please retry shortly.';
+        this.recordFailure(videoId, true, userMsg);
+        return {
+          success: false,
+          videoId,
+          url,
+          title,
+          durationSeconds,
+          extractionMethod: 'yt-dlp subtitles (rate-limited)',
+          ytDlpVersion,
+          transcriptLength: 0,
+          error: userMsg,
+          stderr: subStderr.substring(0, 500),
+          isRateLimited: true,
+        };
+      }
+
+      // Fallback subtitle extraction: ONLY if primary sub request yielded no files AND was NOT rate-limited
       if (!rawCaptionContent && !options?.signal?.aborted) {
         console.log(`${logPrefix} [Stage: YOUTUBE_SUBTITLES_FALLBACK] Primary subs unavailable. Attempting native captions (hi-orig,hi,en.*)...`);
         const fbPrefix = path.join(tempDir, `yt_sub_fb_${videoId}_${Date.now()}`);
@@ -449,7 +567,7 @@ export class YouTubeExtractor {
           '--sub-format', 'vtt',
           '--no-playlist',
           '--socket-timeout', '10',
-          '--no-abort-on-error',
+          '--extractor-retries', '1',
           '-o', `${fbPrefix}.%(ext)s`,
         ];
         if (playerClient) {

@@ -77,10 +77,13 @@ export class SchemaFallbackManager {
 
   private async _init(): Promise<void> {
     await this.initSqlite();
-    this.detectSchema().catch(() => {});
+    await this.detectSchema();
   }
 
   private async detectSchema(): Promise<void> {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
     if (!supabaseUrl || !supabaseKey) return;

@@ -6,6 +6,7 @@ module.exports = {
   moduleNameMapper: {
     '^uuid$': '<rootDir>/tests/mocks/uuidMock.js',
   },
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
   coverageDirectory: 'coverage',
   collectCoverageFrom: [
     'src/**/*.ts',

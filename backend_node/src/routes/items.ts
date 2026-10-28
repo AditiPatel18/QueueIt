@@ -342,14 +342,20 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
 
         processingLocks.delete(existingItem.id);
         const videoId = YouTubeExtractor.extractVideoId(cleanUrl);
+        let shouldQueue = true;
         if (videoId) {
           const backoff = YouTubeExtractor.isVideoInBackoff(videoId);
-          if (!backoff.isRateLimited) {
+          const isGlobalRateLimited = YouTubeExtractor.isGlobalRateLimited();
+          if ((backoff.inBackoff && backoff.isRateLimited) || isGlobalRateLimited) {
+            shouldQueue = false;
+          } else {
             YouTubeExtractor.clearBackoff(videoId);
           }
         }
-        console.log(`[Item ${existingItem.id}] [Stage: JOB_QUEUED] Existing item re-queued for enrichment (URL: ${cleanUrl})`);
-        runMockEnrichmentPipeline(existingItem.id, cleanUrl, userId, existingItem.title || title || null).catch(() => {});
+        if (shouldQueue) {
+          console.log(`[Item ${existingItem.id}] [Stage: JOB_QUEUED] Existing item re-queued for enrichment (URL: ${cleanUrl})`);
+          runMockEnrichmentPipeline(existingItem.id, cleanUrl, userId, existingItem.title || title || null).catch(() => {});
+        }
         existingItem.updated_at = nowIso;
       }
 
@@ -1635,6 +1641,26 @@ router.post('/:id/retry', requireAuth, async (req: AuthenticatedRequest, res: Re
 
     const nowIso = new Date().toISOString();
 
+    // If YouTube video, check backoff: if active rate limit (per-video or global), reject with 429 to respect cooldown
+    const videoId = YouTubeExtractor.extractVideoId(data.url);
+    if (videoId) {
+      const backoff = YouTubeExtractor.isVideoInBackoff(videoId);
+      const isGlobalRateLimited = YouTubeExtractor.isGlobalRateLimited();
+      if ((backoff.inBackoff && backoff.isRateLimited) || isGlobalRateLimited) {
+        const remainingSec = Math.max(
+          backoff.backoffUntil ? Math.ceil((backoff.backoffUntil - Date.now()) / 1000) : 0,
+          YouTubeExtractor.getGlobalRateLimitRemainingSec()
+        );
+        const waitMin = Math.ceil(remainingSec / 60);
+        return res.status(429).json({
+          detail: `Extraction paused due to YouTube rate limits. Retrying in ${waitMin}m.`,
+          retry_after: remainingSec,
+        });
+      }
+      // If transient failure cooldown, clear it on manual user retry
+      YouTubeExtractor.clearBackoff(videoId);
+    }
+
     // Reset to queued & clear previous transcript/error notes for fresh re-extraction
     await supabase.from('items').update({
       processing_status: 'queued',
@@ -1649,15 +1675,6 @@ router.post('/:id/retry', requireAuth, async (req: AuthenticatedRequest, res: Re
 
     // Clear any stale lock on this item so retry pipeline executes
     processingLocks.delete(itemId);
-
-    // If YouTube video, check backoff: if not genuine rate limit (e.g. transient failure), clear backoff for retry
-    const videoId = YouTubeExtractor.extractVideoId(data.url);
-    if (videoId) {
-      const backoff = YouTubeExtractor.isVideoInBackoff(videoId);
-      if (!backoff.isRateLimited) {
-        YouTubeExtractor.clearBackoff(videoId);
-      }
-    }
 
     console.log(`[Item ${itemId}] [Stage: JOB_QUEUED] Item queued via retry request (URL: ${data.url})`);
 

@@ -2,6 +2,7 @@ import request from 'supertest';
 import app from '../../src/app';
 import { supabase, supabaseAuth } from '../../src/config/supabase';
 import { fallbackDb } from '../../src/utils/schemaFallback';
+import { YouTubeExtractor } from '../../src/services/youtubeExtractor';
 
 const defaultItem = {
   id: 'rec-item-1',
@@ -76,6 +77,12 @@ jest.mock('../../src/utils/schemaFallback', () => ({
   dbGet: jest.fn(),
   dbAll: jest.fn(),
   dbRun: jest.fn(),
+}));
+
+jest.mock('../../src/services/aiService', () => ({
+  AIService: {
+    processItemEnrichment: jest.fn().mockResolvedValue({ success: true }),
+  },
 }));
 
 describe('Items API Integration Tests', () => {
@@ -244,6 +251,43 @@ describe('Items API Integration Tests', () => {
       expect(updateCall[0].updated_at).toBeDefined();
       const dbUpdateTime = new Date(updateCall[0].updated_at).getTime();
       expect(Date.now() - dbUpdateTime).toBeLessThan(10000);
+    });
+
+    it('should reject retry with HTTP 429 and inform user when YouTube rate limit cooldown is active', async () => {
+      const videoId = 'dzL6WigkIPI';
+      const rateLimitedItem = {
+        id: 'rl-item-1',
+        user_id: 'test-user-id',
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        title: 'Rate Limited Video',
+        status: 'unread',
+        processing_status: 'failed',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        notes: '[Extraction Failed] YouTube rate limit reached (HTTP 429)',
+      };
+
+      // Record a genuine rate limit failure on this video
+      YouTubeExtractor.recordFailure(videoId, true, 'YouTube rate limit reached (HTTP 429)');
+
+      const customBuilder = createBuilder();
+      customBuilder.maybeSingle = jest.fn().mockResolvedValue({ data: rateLimitedItem, error: null });
+      (supabase.from as jest.Mock).mockReturnValue(customBuilder);
+
+      const res = await request(app)
+        .post('/api/items/rl-item-1/retry')
+        .set('Authorization', 'Bearer valid-jwt-token');
+
+      expect(res.status).toBe(429);
+      expect(res.body.detail).toContain('Extraction paused due to YouTube rate limits');
+      expect(res.body.retry_after).toBeGreaterThan(0);
+
+      // Verify item was NOT updated to queued in Supabase
+      expect(customBuilder.update).not.toHaveBeenCalled();
+
+      // Clean up rate limit state
+      YouTubeExtractor.clearBackoff(videoId);
+      YouTubeExtractor.resetGlobalRateLimit();
     });
   });
 });
